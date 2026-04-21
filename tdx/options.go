@@ -8,7 +8,6 @@ const (
 
 type config struct {
 	timeout time.Duration
-	debug   bool
 }
 
 func defaultConfig() config {
@@ -26,12 +25,5 @@ func WithTimeout(d time.Duration) Option {
 		if d > 0 {
 			c.timeout = d
 		}
-	}
-}
-
-// WithDebug enables debug logging to stderr.
-func WithDebug() Option {
-	return func(c *config) {
-		c.debug = true
 	}
 }
