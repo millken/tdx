@@ -9,12 +9,60 @@ import (
 
 // QuotesList sort type constants.
 const (
-	SortCode        uint16 = 0x00
-	SortChangePct   uint16 = 0x0E // 涨幅%
-	SortAmplitudePct uint16 = 0x0F // 振幅%
-	SortVolRatio    uint16 = 0x23 // 量比
-	SortTurnoverRate uint16 = 0x24 // 换手率%
-	SortSpeedPct    uint16 = 0x2E // 涨速%
+	SortCode           uint16 = 0x00 // 代码
+	SortPrice          uint16 = 0x06 // 现价
+	SortVolume         uint16 = 0x09 // 总量
+	SortAmount         uint16 = 0x0A // 总金额
+	SortChangePct      uint16 = 0x0E // 涨幅%
+	SortAmplitudePct   uint16 = 0x0F // 振幅%
+	SortPEDynamic      uint16 = 0x11 // 市盈(动)
+	SortEntrustRatio   uint16 = 0x12 // 委比%
+	SortInOutRatio     uint16 = 0x15 // 内外比
+	SortLockedRatio    uint16 = 0x1B // 封成比
+	SortLockedAmount   uint16 = 0x1C // 封单额
+	SortOpenAmount     uint16 = 0x1D // 开盘金额
+	SortVolRatio       uint16 = 0x23 // 量比
+	SortTurnoverRate   uint16 = 0x24 // 换手率%
+	SortFloatMcap      uint16 = 0x26 // 流通市值
+	SortTotalMcapAB    uint16 = 0x27 // AB股总市值
+	SortStrengthPct    uint16 = 0x2D // 强弱度%
+	SortSpeedPct       uint16 = 0x2E // 涨速%
+	SortActivity       uint16 = 0x2F // 活跃度
+	SortShortTurnover  uint16 = 0xCC // 短换手%
+	SortVolSpeedPct    uint16 = 0xD0 // 量涨速%
+	SortMainNetAmount  uint16 = 0xD4 // 主力净额
+	SortAmount2M       uint16 = 0x10C // 2分钟金额
+)
+
+// QuotesList filter type constants (exclude bitmask, OR to combine).
+// Set bits to EXCLUDE those stock types from results.
+const (
+	FilterNew      uint16 = 1 << 0 // 排除未开板次新股
+	FilterKCB      uint16 = 1 << 1 // 排除科创板
+	FilterST       uint16 = 1 << 2 // 排除ST股
+	FilterCYB      uint16 = 1 << 3 // 排除创业板
+	FilterBJ       uint16 = 1 << 4 // 排除北证A股
+)
+
+// QuotesList category constants.
+const (
+	CategorySH       uint16 = 0     // 上证A
+	CategorySZ       uint16 = 2     // 深证A
+	CategoryA        uint16 = 6     // A股
+	CategoryB        uint16 = 7     // B股
+	CategoryKCB      uint16 = 8     // 科创板
+	CategoryBJ       uint16 = 12    // 北证A
+	CategoryCYB      uint16 = 14    // 创业板
+	CategoryHGT      uint16 = 0x2AF9 // 沪股通
+	CategorySGT      uint16 = 0x2B01 // 深股通
+	CategoryETF      uint16 = 0x2AFD // ETF基金
+	CategoryLOF      uint16 = 0x2B04 // LOF基金
+	CategoryZS       uint16 = 0x2B2C // 沪深系列指数
+	CategoryBoardHY  uint16 = 10001 // 行业一级
+	CategoryBoardHY2 uint16 = 10002 // 行业二级
+	CategoryBoardGN  uint16 = 10004 // 概念
+	CategoryBoardFG  uint16 = 10005 // 风格
+	CategoryBoardDQ  uint16 = 10006 // 地区
 )
 
 // QuotesList sort order constants.
@@ -43,7 +91,7 @@ type QuotesItem struct {
 }
 
 // RequestQuotesListFrame builds a 0x054B quotes list request frame.
-func RequestQuotesListFrame(msgID uint32, control byte, category uint16, sortType uint16, start uint16, count uint16, sortReverse uint16) ([]byte, error) {
+func RequestQuotesListFrame(msgID uint32, control byte, category uint16, sortType uint16, start uint16, count uint16, sortReverse uint16, filter uint16) ([]byte, error) {
 	body := make([]byte, 18)
 	binary.LittleEndian.PutUint16(body[0:2], category)
 	binary.LittleEndian.PutUint16(body[2:4], sortType)
@@ -51,14 +99,15 @@ func RequestQuotesListFrame(msgID uint32, control byte, category uint16, sortTyp
 	binary.LittleEndian.PutUint16(body[6:8], count)
 	binary.LittleEndian.PutUint16(body[8:10], sortReverse)
 	binary.LittleEndian.PutUint16(body[10:12], 5)
-	binary.LittleEndian.PutUint16(body[12:14], 0)
+	binary.LittleEndian.PutUint16(body[12:14], filter)
 	binary.LittleEndian.PutUint16(body[14:16], 1)
 	binary.LittleEndian.PutUint16(body[16:18], 0)
 	return BuildDirectFrame(msgID, control, DirectFrameTypeQuotesList, body), nil
 }
 
 // GetQuotesList retrieves a sorted quotes list for the given market category.
-func (c *Client) GetQuotesList(category uint16, sortType uint16, start int, count int, reverse bool) ([]QuotesItem, error) {
+// The optional exclude parameter is a bitmask to exclude stock types (OR multiple FilterXxx constants).
+func (c *Client) GetQuotesList(category uint16, sortType uint16, start int, count int, reverse bool, exclude ...uint16) ([]QuotesItem, error) {
 	if err := c.ensureConn(); err != nil {
 		return nil, err
 	}
@@ -72,7 +121,23 @@ func (c *Client) GetQuotesList(category uint16, sortType uint16, start int, coun
 		sortReverse = SortAsc
 	}
 
-	packet, err := RequestQuotesListFrame(0x000A0401, 0x01, category, sortType, uint16(start), uint16(count), sortReverse)
+	var excludeMask uint16
+	clientFilterBJ := false
+	for _, f := range exclude {
+		if f == FilterBJ {
+			clientFilterBJ = true
+			continue // server returns empty when BJ filter bit is set
+		}
+		excludeMask |= f
+	}
+
+	// Request extra items when client-side BJ filtering is needed.
+	reqCount := count
+	if clientFilterBJ {
+		reqCount = count + 200
+	}
+
+	packet, err := RequestQuotesListFrame(0x000A0401, 0x01, category, sortType, uint16(start), uint16(reqCount), sortReverse, excludeMask)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +154,25 @@ func (c *Client) GetQuotesList(category uint16, sortType uint16, start int, coun
 		return nil, fmt.Errorf("tdx: empty quotes list response")
 	}
 
-	return DecodeQuotesList(response.Body.Decoded)
+	items, err := DecodeQuotesList(response.Body.Decoded)
+	if err != nil {
+		return nil, err
+	}
+
+	if clientFilterBJ {
+		filtered := make([]QuotesItem, 0, len(items))
+		for _, item := range items {
+			if item.Market != MarketBeijing {
+				filtered = append(filtered, item)
+			}
+		}
+		if len(filtered) > count {
+			filtered = filtered[:count]
+		}
+		return filtered, nil
+	}
+
+	return items, nil
 }
 
 // DecodeQuotesList decodes a 0x054B quotes list response body.
