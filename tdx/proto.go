@@ -125,6 +125,7 @@ const (
 	DirectFrameTypeTopBoard     uint16 = 0x053F
 	DirectFrameTypeQuotesList   uint16 = 0x054B
 	DirectFrameTypeBoardMembers uint16 = 0x122C
+	DirectFrameTypeBatchQuote   uint16 = 0x054C
 )
 
 // Market constants.

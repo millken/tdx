@@ -7,3 +7,6 @@
 [submodule "opentdx"]
 	path = opentdx
 	url = https://github.com/LisonEvf/opentdx
+[submodule "gotdx"]
+	path = gotdx
+	url = https://github.com/bensema/gotdx.git

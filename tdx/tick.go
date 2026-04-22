@@ -77,27 +77,47 @@ type QuoteStock struct {
 //
 //	tick, err := c.GetTick("sh600000")
 func (c *Client) GetTick(code string) (*Tick, error) {
+	ticks, err := c.GetTicks([]string{code})
+	if err != nil {
+		return nil, err
+	}
+	if len(ticks) == 0 {
+		return nil, fmt.Errorf("tdx: empty tick response")
+	}
+	return &ticks[0], nil
+}
+
+// GetTicks retrieves real-time quote snapshots for multiple stock codes in one request.
+//
+// Parameters:
+//   - codes: stock codes, supports "600000", "sh600000", "SH600000" formats
+//
+// Example:
+//
+//	ticks, err := c.GetTicks([]string{"sh600000", "sz000001", "sz300750"})
+func (c *Client) GetTicks(codes []string) ([]Tick, error) {
 	if err := c.ensureConn(); err != nil {
 		return nil, err
 	}
 
-	normalizedCode, market, hasPrefixedMarket, err := normalizeKlineCode(code)
-	if err != nil {
-		return nil, err
-	}
-	if !hasPrefixedMarket {
-		market, err = inferKlineMarket(normalizedCode)
+	stocks := make([]QuoteStock, 0, len(codes))
+	for _, code := range codes {
+		normalizedCode, market, hasPrefixedMarket, err := normalizeKlineCode(code)
 		if err != nil {
 			return nil, err
 		}
+		if !hasPrefixedMarket {
+			market, err = inferKlineMarket(normalizedCode)
+			if err != nil {
+				return nil, err
+			}
+		}
+		stocks = append(stocks, QuoteStock{Market: byte(market), Code: normalizedCode})
 	}
 
 	c.drainPending()
 
-	packet, err := RequestTickFrame(0x000A0401, 0x01, []QuoteStock{{
-		Market: byte(market),
-		Code:   normalizedCode,
-	}})
+	packet, err := RequestTickFrame(0x000A0401, 0x01, stocks)
 	if err != nil {
 		return nil, err
 	}
@@ -114,14 +134,7 @@ func (c *Client) GetTick(code string) (*Tick, error) {
 		return nil, fmt.Errorf("tdx: empty tick response")
 	}
 
-	ticks, err := DecodeTicks(response.Body.Decoded)
-	if err != nil {
-		return nil, err
-	}
-	if len(ticks) == 0 {
-		return nil, fmt.Errorf("tdx: empty tick response")
-	}
-	return &ticks[0], nil
+	return DecodeTicks(response.Body.Decoded)
 }
 
 // DecodeTicks decodes a 0x053E tick response body.
