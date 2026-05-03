@@ -1,0 +1,16 @@
+artifacts/
+.ghidra/
+*.bin
+*.c
+*.cpp
+*.h
+*.o
+*.obj
+*.so
+*.dll
+*.dylib
+*.exe
+*.log
+*.tmp
+*.bak
+*.swp
