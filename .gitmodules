@@ -1,0 +1,12 @@
+[submodule "tongstock"]
+	path = tongstock
+	url = https://github.com/sjzsdu/tongstock.git
+[submodule "pytdx"]
+	path = pytdx
+	url = https://github.com/rainx/pytdx.git
+[submodule "opentdx"]
+	path = opentdx
+	url = https://github.com/LisonEvf/opentdx
+[submodule "gotdx"]
+	path = gotdx
+	url = https://github.com/bensema/gotdx.git
