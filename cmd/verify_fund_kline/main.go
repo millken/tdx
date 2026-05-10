@@ -35,7 +35,7 @@ func main() {
 	}
 	defer exClient.Close()
 
-	exKlines, err := exClient.GetFundKline(*code, *period, *count)
+	exKlines, err := exClient.GetKline(*code, *period, *count)
 	if err != nil {
 		failf("GetFundKline failed: %v", err)
 	}

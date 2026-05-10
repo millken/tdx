@@ -8,10 +8,11 @@ import (
 	"time"
 )
 
-// Default bitmap: original working fields + Activity(0x59) + ConsecutiveUp(0x5c).
+// Default bitmap includes the commonly used quote fields plus multi-day change fields,
+// Activity(0x59), and ConsecutiveUp(0x5c).
 var defaultBitmap = []byte{
 	0xff, 0xfc, 0xe1, 0xcc, 0x3f, 0x08, 0x03, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x12, 0x00, 0x00, 0x00,
+	0x70, 0x00, 0x00, 0x00, 0x12, 0x08, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00,
 }
 
@@ -59,6 +60,17 @@ const (
 	BitmapChange10d      = 0x46
 	BitmapActivity       = 0x59
 	BitmapConsecutiveUp  = 0x5c
+	BitmapMainNetAmount  = 0x6b
+)
+
+// Board members sort type constants used by the 0x122C protocol.
+const (
+	BoardMembersSortCode          uint16 = SortCode
+	BoardMembersSortVolRatio      uint16 = BitmapVolRatio
+	BoardMembersSortAmount        uint16 = BitmapAmount
+	BoardMembersSortChangePct     uint16 = SortChangePct
+	BoardMembersSortTurnover      uint16 = BitmapTurnover
+	BoardMembersSortMainNetAmount uint16 = SortMainNetAmount
 )
 
 // boardMembersFieldFmt returns 'I' for uint32 fields, 'f' for float32, 'i' for int32.
@@ -118,6 +130,7 @@ type BoardMembersItem struct {
 	Change60d      float32
 	Change5d       float32
 	Change10d      float32
+	MainNetAmount  float32
 	Activity       uint32
 	ConsecutiveUp  int32
 }
@@ -347,6 +360,8 @@ func DecodeBoardMembers(body []byte) ([]BoardMembersItem, error) {
 				item.Change5d = val
 			case BitmapChange10d:
 				item.Change10d = val
+			case BitmapMainNetAmount:
+				item.MainNetAmount = val
 			case BitmapActivity:
 				item.Activity = raw
 			case BitmapConsecutiveUp:

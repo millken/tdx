@@ -34,6 +34,11 @@ const (
 	SortAmount2M      uint16 = 0x10C // 2分钟金额
 )
 
+// Client-facing aliases for the board/quotes sort fields.
+const (
+	SortChange3dPct uint16 = SortStrengthPct // 客户端“3日涨幅”排序
+)
+
 // QuotesList filter type constants (exclude bitmask, OR to combine).
 // Set bits to EXCLUDE those stock types from results.
 const (
@@ -74,20 +79,25 @@ const (
 
 // QuotesItem represents a single stock in the sorted quotes list.
 type QuotesItem struct {
-	Market    uint16
-	Code      string
-	Price     float64 // 现价 (元)
-	Open      float64 // 开盘价 (元)
-	High      float64 // 最高价 (元)
-	Low       float64 // 最低价 (元)
-	PreClose  float64 // 昨收价 (元)
-	Volume    int64   // 总量 (手)
-	CurVol    int64   // 现量 (手)
-	Amount    float64 // 总金额 (元)
-	InVol     int64   // 内盘 (手)
-	OutVol    int64   // 外盘 (手)
-	RiseSpeed float64 // 涨速 (%)
-	Active    uint16  // 活跃度
+	Market        uint16
+	Code          string
+	Price         float64 // 现价 (元)
+	Open          float64 // 开盘价 (元)
+	High          float64 // 最高价 (元)
+	Low           float64 // 最低价 (元)
+	PreClose      float64 // 昨收价 (元)
+	ServerTime    string
+	Volume        int64   // 总量 (手)
+	CurVol        int64   // 现量 (手)
+	Amount        float64 // 总金额 (元)
+	InVol         int64   // 内盘 (手)
+	OutVol        int64   // 外盘 (手)
+	RiseSpeed     float64 // 涨速 (%)
+	ShortTurnover float32 // 短换手 (%)
+	Min2Amount    float32 // 2分钟金额
+	VolRatio      float32 // 量比
+	Depth         float32 // 委比深度/买卖盘深度
+	Active        uint16  // 活跃度
 }
 
 // RequestQuotesListFrame builds a 0x054B quotes list request frame.
@@ -183,7 +193,7 @@ func (c *MainClient) GetQuotesList(category uint16, sortType uint16, start int, 
 //	<B6sH> (9 bytes) — market, code, active1
 //	9 get_price() varints: price, pre_close, open, high, low, server_time, neg_price, vol, cur_vol
 //	<f> (4 bytes) — amount (float32)
-//	3 get_price() varints: in_vol, out_vol, s_amount, open_amount
+//	4 get_price() varints: in_vol, out_vol, s_amount, open_amount
 //	4 get_price() varints: bid, ask, bid_vol, ask_vol
 //	<Hhhfh10sff24sH> (56 bytes) — trailing fixed fields
 //
@@ -208,7 +218,9 @@ func DecodeQuotesList(body []byte) ([]QuotesItem, error) {
 		body = body[9:]
 
 		var price, preClose, open, high, low int64
+		var serverTime int64
 		var vol, curVol int64
+		var inVol, outVol int64
 		var err error
 
 		body, price, err = cutPrice(body)
@@ -232,8 +244,7 @@ func DecodeQuotesList(body []byte) ([]QuotesItem, error) {
 			return nil, fmt.Errorf("quotes list record %d low: %w", i, err)
 		}
 
-		// server_time, neg_price
-		body, _, err = cutPrice(body)
+		body, serverTime, err = cutPrice(body)
 		if err != nil {
 			return nil, fmt.Errorf("quotes list record %d server_time: %w", i, err)
 		}
@@ -258,11 +269,18 @@ func DecodeQuotesList(body []byte) ([]QuotesItem, error) {
 		amount := math.Float32frombits(binary.LittleEndian.Uint32(body[:4]))
 		body = body[4:]
 
-		// in_vol, out_vol, s_amount, open_amount — skip
-		for j := 0; j < 4; j++ {
+		body, inVol, err = cutPrice(body)
+		if err != nil {
+			return nil, fmt.Errorf("quotes list record %d in_vol: %w", i, err)
+		}
+		body, outVol, err = cutPrice(body)
+		if err != nil {
+			return nil, fmt.Errorf("quotes list record %d out_vol: %w", i, err)
+		}
+		for j := 0; j < 2; j++ {
 			body, _, err = cutPrice(body)
 			if err != nil {
-				return nil, fmt.Errorf("quotes list record %d field_%d: %w", i, j, err)
+				return nil, fmt.Errorf("quotes list record %d field_%d: %w", i, j+2, err)
 			}
 		}
 
@@ -278,23 +296,34 @@ func DecodeQuotesList(body []byte) ([]QuotesItem, error) {
 		if len(body) < 56 {
 			return nil, fmt.Errorf("quotes list record %d tail: unexpected EOF", i)
 		}
-		// rise_speed at offset 2 (int16)
+		// Offsets mirror 0x054C batch quote tail.
 		riseSpeed := float64(int16(binary.LittleEndian.Uint16(body[2:4]))) / 100
+		shortTurnover := float32(int16(binary.LittleEndian.Uint16(body[4:6]))) / 100
+		min2Amount := math.Float32frombits(binary.LittleEndian.Uint32(body[6:10]))
+		volRatio := math.Float32frombits(binary.LittleEndian.Uint32(body[22:26]))
+		depth := math.Float32frombits(binary.LittleEndian.Uint32(body[26:30]))
 		body = body[56:]
 
 		items = append(items, QuotesItem{
-			Market:    market,
-			Code:      code,
-			Price:     float64(price) / 100,
-			Open:      float64(open+price) / 100,
-			High:      float64(high+price) / 100,
-			Low:       float64(low+price) / 100,
-			PreClose:  float64(preClose+price) / 100,
-			Volume:    vol,
-			CurVol:    curVol,
-			Amount:    float64(amount),
-			Active:    active,
-			RiseSpeed: riseSpeed,
+			Market:        market,
+			Code:          code,
+			Price:         float64(price) / 100,
+			Open:          float64(open+price) / 100,
+			High:          float64(high+price) / 100,
+			Low:           float64(low+price) / 100,
+			PreClose:      float64(preClose+price) / 100,
+			ServerTime:    formatQuoteTime(serverTime),
+			Volume:        vol,
+			CurVol:        curVol,
+			Amount:        float64(amount),
+			InVol:         inVol,
+			OutVol:        outVol,
+			RiseSpeed:     riseSpeed,
+			ShortTurnover: shortTurnover,
+			Min2Amount:    min2Amount,
+			VolRatio:      volRatio,
+			Depth:         depth,
+			Active:        active,
 		})
 	}
 

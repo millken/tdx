@@ -114,7 +114,7 @@ func (c *MainClient) GetKline(code string, period string, count int) ([]Kline, e
 			return nil, err
 		}
 		defer exClient.Close()
-		return exClient.GetFundKline(normalizedCode, period, count)
+		return exClient.GetKline(normalizedCode, period, count)
 	}
 
 	kind := inferKlineKind(normalizedCode, market)
@@ -141,8 +141,8 @@ func (c *MainClient) GetKline(code string, period string, count int) ([]Kline, e
 	return DecodeKlines(response.Body.Decoded, normalizedCode, market, pv.period, kind)
 }
 
-// GetFundKline retrieves fund K-line data via the 7727 extension quote protocol.
-func (c *ExClient) GetFundKline(code string, period string, count int) ([]Kline, error) {
+// GetKline retrieves fund K-line data via the 7727 extension quote protocol.
+func (c *ExClient) GetKline(code string, period string, count int) ([]Kline, error) {
 	if err := c.ensureConn(); err != nil {
 		return nil, err
 	}

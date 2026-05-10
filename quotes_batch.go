@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -266,29 +268,115 @@ func DecodeBatchQuotes(body []byte) ([]BatchQuote, error) {
 	return quotes, nil
 }
 
-// formatQuoteTime formats the server time field from 0x054C response.
+// formatQuoteTime formats the server time field shared by 0x054B/0x054C.
 func formatQuoteTime(ts int64) string {
 	if ts == 0 || ts == 100 {
 		return "00:00:00"
 	}
-	s := fmt.Sprintf("%d", ts)
+	if ts < 0 {
+		return strconv.FormatInt(ts, 10)
+	}
+
+	s := strconv.FormatInt(ts, 10)
+	if direct, ok := formatQuoteTimeDirect(s); ok {
+		return direct
+	}
+	if fractional, ok := formatQuoteTimeFractionalHour(s); ok {
+		return fractional
+	}
+
+	return s
+}
+
+func formatQuoteTimeDirect(s string) (string, bool) {
+	fracDigits := 0
+	switch {
+	case len(s) <= 6:
+		s = leftPadDigits(s, 6)
+	case len(s) <= 8:
+		fracDigits = 2
+		s = leftPadDigits(s, 8)
+	default:
+		fracDigits = 3
+		s = leftPadDigits(s, 9)
+	}
+
+	timePart := s
+	fracPart := ""
+	if fracDigits > 0 {
+		timePart = s[:len(s)-fracDigits]
+		fracPart = strings.TrimRight(s[len(s)-fracDigits:], "0")
+	}
+	timePart = leftPadDigits(timePart, 6)
+
+	hh := timePart[0:2]
+	mm := timePart[2:4]
+	ss := timePart[4:6]
+	hour, err1 := strconv.Atoi(hh)
+	minute, err2 := strconv.Atoi(mm)
+	second, err3 := strconv.Atoi(ss)
+	if err1 != nil || err2 != nil || err3 != nil || hour > 23 || minute > 59 || second > 59 {
+		return "", false
+	}
+
+	result := hh + ":" + mm + ":" + ss
+	if fracPart != "" {
+		result += "." + fracPart
+	}
+	return result, true
+}
+
+func formatQuoteTimeFractionalHour(s string) (string, bool) {
 	if len(s) < 7 {
+		return "", false
+	}
+
+	hourPart := s[:len(s)-6]
+	fracPart := s[len(s)-6:]
+	hour, err1 := strconv.Atoi(hourPart)
+	frac, err2 := strconv.Atoi(fracPart)
+	if err1 != nil || err2 != nil || hour > 23 {
+		return "", false
+	}
+
+	totalSeconds := float64(frac) * 3600 / 1_000_000
+	minute := int(totalSeconds / 60)
+	second := totalSeconds - float64(minute*60)
+	if minute > 59 || second >= 60 {
+		return "", false
+	}
+
+	wholeSeconds := int(second)
+	fracMillis := int(math.Round((second - float64(wholeSeconds)) * 1000))
+	if fracMillis == 1000 {
+		wholeSeconds++
+		fracMillis = 0
+	}
+	if wholeSeconds == 60 {
+		minute++
+		wholeSeconds = 0
+	}
+	if minute == 60 {
+		hour++
+		minute = 0
+	}
+	if hour > 23 {
+		return "", false
+	}
+
+	result := fmt.Sprintf("%02d:%02d:%02d", hour, minute, wholeSeconds)
+	if fracMillis != 0 {
+		fracStr := strings.TrimRight(fmt.Sprintf("%03d", fracMillis), "0")
+		result += "." + fracStr
+	}
+	return result, true
+}
+
+func leftPadDigits(s string, width int) string {
+	if len(s) >= width {
 		return s
 	}
-	result := s[:len(s)-6] + ":"
-	minPart := s[len(s)-6:]
-	m := int(minPart[0]-'0')*10 + int(minPart[1]-'0')
-	if m < 60 {
-		result += minPart[:2] + ":"
-		sec := int(minPart[2]-'0')*100000 + int(minPart[3]-'0')*10000 + int(minPart[4]-'0')*1000 + int(minPart[5]-'0')*100
-		result += fmt.Sprintf("%06.3f", float64(sec)*60.0/10000.0)
-	} else {
-		totalSec := int(minPart[0]-'0')*100000 + int(minPart[1]-'0')*10000 + int(minPart[2]-'0')*1000 + int(minPart[3]-'0')*100 + int(minPart[4]-'0')*10 + int(minPart[5]-'0')
-		mm := totalSec * 60 / 1000000
-		ss := (totalSec * 60 % 1000000) * 60 / 1000000
-		result += fmt.Sprintf("%02d:%02d", mm, ss)
-	}
-	return result
+	return strings.Repeat("0", width-len(s)) + s
 }
 
 var _ = time.Local

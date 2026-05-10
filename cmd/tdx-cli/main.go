@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -43,39 +44,36 @@ func main() {
 	case "probe":
 		runProbe(args[1:])
 		return
+	case "hot-board":
+		runHotBoardCommand(*host, *spHost, args[1:], w, *format)
+		return
+	case "board-heatmap":
+		runBoardHeatmapCommand(*host, *spHost, args[1:], w, *format)
+		return
 	}
 
-	// Determine if we need SP mode
-	spCmd := cmd == "limit" || cmd == "board-members"
+	boardCmd := cmd == "limit" || cmd == "board-members"
+	if boardCmd {
+		client, err := dialBoardClient(*spHost)
+		if err != nil {
+			fatalf("dial board host failed: %v", err)
+		}
+		defer client.Close()
+		runCommand(cmd, client, args[1:], w, *format)
+		return
+	}
 
 	// Build pool or single client
 	if *poolSize > 0 {
 		var pool *tdx.Pool
 		var err error
-		opts := []tdx.Option{}
-		if spCmd {
-			opts = append(opts, tdx.WithSP())
-		}
-		pool, err = tdx.NewPool(*poolSize, opts...)
+		pool, err = tdx.NewPool(*poolSize)
 		if err != nil {
 			fatalf("create pool failed: %v", err)
 		}
 		defer pool.Close()
 
 		client := pool.Get()
-		runCommand(cmd, client, args[1:], w, *format)
-	} else if spCmd {
-		var client *tdx.MainClient
-		var err error
-		if *spHost != "" {
-			client, err = tdx.DialSP(*spHost)
-		} else {
-			client, err = tdx.DialSPBest(nil)
-		}
-		if err != nil {
-			fatalf("dial SP host failed: %v", err)
-		}
-		defer client.Close()
 		runCommand(cmd, client, args[1:], w, *format)
 	} else {
 		var client *tdx.MainClient
@@ -129,9 +127,57 @@ func runCommand(cmd string, client *tdx.Client, args []string, w *os.File, forma
 		runLimit(client, args, w, format)
 	case "board-members":
 		runBoardMembers(client, args, w, format)
+	case "board-heatmap":
+		fatalf("board-heatmap should be dispatched before runCommand")
 	default:
 		fatalf("unknown command: %s\n\n%s", cmd, availableCommands())
 	}
+}
+
+func runHotBoardCommand(host, spHost string, args []string, w *os.File, format string) {
+	quotesClient, err := dialMainClient(host)
+	if err != nil {
+		fatalf("dial host failed: %v", err)
+	}
+	defer quotesClient.Close()
+
+	boardClient, err := dialBoardClient(spHost)
+	if err != nil {
+		fatalf("dial board host failed: %v", err)
+	}
+	defer boardClient.Close()
+
+	runHotBoard(quotesClient, boardClient, args, w, format)
+}
+
+func runBoardHeatmapCommand(host, spHost string, args []string, w *os.File, format string) {
+	quotesClient, err := dialMainClient(host)
+	if err != nil {
+		fatalf("dial host failed: %v", err)
+	}
+	defer quotesClient.Close()
+
+	boardClient, err := dialBoardClient(spHost)
+	if err != nil {
+		fatalf("dial board host failed: %v", err)
+	}
+	defer boardClient.Close()
+
+	runBoardHeatmap(quotesClient, boardClient, args, w, format)
+}
+
+func dialMainClient(host string) (*tdx.MainClient, error) {
+	if host != "" {
+		return tdx.Dial(host)
+	}
+	return tdx.DialBest(nil)
+}
+
+func dialBoardClient(host string) (*tdx.MainClient, error) {
+	if host != "" {
+		return tdx.Dial(host)
+	}
+	return tdx.DialBest(tdx.BestSPAddresses(0))
 }
 
 // ---------------------------------------------------------------------------
@@ -779,6 +825,859 @@ func renderTopBoardJSON(w *os.File, board string, items []tdx.TopBoardItem) {
 	_ = enc.Encode(map[string][]tdx.TopBoardItem{board: items})
 }
 
+type hotBoardSnapshot struct {
+	Market    uint16  `json:"market"`
+	Code      string  `json:"code"`
+	Name      string  `json:"name,omitempty"`
+	Heat      float64 `json:"heat"`
+	Price     float64 `json:"price"`
+	PreClose  float64 `json:"pre_close"`
+	ChangePct float64 `json:"change_pct"`
+	Change3d  float64 `json:"change_3d"`
+	Amount    float64 `json:"amount"`
+	RiseSpeed float64 `json:"rise_speed"`
+	Active    uint16  `json:"active"`
+}
+
+type hotStockSnapshot struct {
+	Market        uint16  `json:"market"`
+	Code          string  `json:"code"`
+	Name          string  `json:"name"`
+	Heat          float64 `json:"heat"`
+	Close         float32 `json:"close"`
+	PreClose      float32 `json:"pre_close"`
+	ChangePct     float32 `json:"change_pct"`
+	MainNetAmount float32 `json:"main_net,omitempty"`
+	Amount        float32 `json:"amount"`
+	Turnover      float32 `json:"turnover"`
+	VolRatio      float32 `json:"vol_ratio"`
+	Activity      uint32  `json:"activity"`
+	ConsecutiveUp int32   `json:"consecutive_up"`
+}
+
+type hotBoardEntry struct {
+	Board       hotBoardSnapshot   `json:"board"`
+	Members     []hotStockSnapshot `json:"members,omitempty"`
+	MemberError string             `json:"member_error,omitempty"`
+}
+
+type hotBoardOutput struct {
+	Category   string          `json:"category"`
+	Sort       string          `json:"sort"`
+	BoardCount int             `json:"board_count"`
+	StockSort  string          `json:"stock_sort"`
+	StockCount int             `json:"stock_count"`
+	Boards     []hotBoardEntry `json:"boards"`
+}
+
+// ---------------------------------------------------------------------------
+// hot-board
+// ---------------------------------------------------------------------------
+
+func runHotBoard(quotesClient, boardClient *tdx.Client, args []string, w *os.File, format string) {
+	fs := flag.NewFlagSet("hot-board", flag.ExitOnError)
+	categoryStr := fs.String("category", "gn", "board category: hy|hy2|gn|fg|dq")
+	boardCount := fs.Int("board-count", 10, "number of hot boards to fetch")
+	stockCount := fs.Int("stock-count", 3, "number of hot stocks per board")
+	boardSortStr := fs.String("sort", "change_pct", "board sort: change_pct|change_3d|main_net|amount|activity|speed_pct|price|code")
+	stockSortStr := fs.String("stock-sort", "change_pct", "member sort: change_pct|amount|turnover|activity|vol_ratio")
+	fs.Parse(args)
+
+	if *boardCount <= 0 {
+		fatalf("hot-board: -board-count must be > 0")
+	}
+	if *stockCount <= 0 {
+		fatalf("hot-board: -stock-count must be > 0")
+	}
+
+	category, categoryLabel, err := parseHotBoardCategory(*categoryStr)
+	if err != nil {
+		fatalf("hot-board: %v", err)
+	}
+	boardSort, err := parseHotBoardQuoteSort(*boardSortStr)
+	if err != nil {
+		fatalf("hot-board: %v", err)
+	}
+	stockSort, err := parseHotBoardMemberSort(*stockSortStr)
+	if err != nil {
+		fatalf("hot-board: %v", err)
+	}
+
+	boards, err := quotesClient.GetQuotesList(category, boardSort, 0, *boardCount, false)
+	if err != nil {
+		fatalf("hot-board: get board quotes failed: %v", err)
+	}
+	boardNames := resolveHotBoardNames(quotesClient, boards)
+
+	result := hotBoardOutput{
+		Category:   categoryLabel,
+		Sort:       *boardSortStr,
+		BoardCount: *boardCount,
+		StockSort:  *stockSortStr,
+		StockCount: *stockCount,
+		Boards:     make([]hotBoardEntry, 0, len(boards)),
+	}
+
+	for _, board := range boards {
+		entry := hotBoardEntry{Board: makeHotBoardSnapshot(board, lookupHotBoardName(boardNames, board.Market, board.Code))}
+
+		members, memberErr := boardClient.GetBoardMembers(board.Code, stockSort, *stockCount, tdx.SortDesc)
+		if memberErr != nil {
+			entry.MemberError = memberErr.Error()
+			result.Boards = append(result.Boards, entry)
+			continue
+		}
+
+		entry.Members = make([]hotStockSnapshot, 0, len(members))
+		for _, member := range members {
+			entry.Members = append(entry.Members, makeHotStockSnapshot(member))
+		}
+		assignHotStockHeat(entry.Members)
+		result.Boards = append(result.Boards, entry)
+	}
+	enrichHotBoardEntries(quotesClient, result.Boards)
+	if isChange3dSort(*boardSortStr) {
+		sort.SliceStable(result.Boards, func(i, j int) bool {
+			return result.Boards[i].Board.Change3d > result.Boards[j].Board.Change3d
+		})
+	}
+	assignHotBoardHeat(result.Boards)
+
+	switch strings.ToLower(format) {
+	case "table", "":
+		renderHotBoardTable(w, result)
+	case "json":
+		renderHotBoardJSON(w, result)
+	default:
+		fatalf("hot-board: unsupported format: %s", format)
+	}
+}
+
+func resolveHotBoardNames(client *tdx.Client, items []tdx.QuotesItem) map[uint16]map[string]string {
+	names := make(map[uint16]map[string]string)
+	targets := make(map[uint16]map[string]struct{})
+
+	for _, item := range items {
+		if item.Code == "" {
+			continue
+		}
+		if targets[item.Market] == nil {
+			targets[item.Market] = make(map[string]struct{})
+		}
+		targets[item.Market][item.Code] = struct{}{}
+	}
+
+	for market, codes := range targets {
+		resolved := resolveHotBoardMarketNames(client, market, codes)
+		if len(resolved) > 0 {
+			names[market] = resolved
+		}
+	}
+
+	return names
+}
+
+func resolveHotBoardMarketNames(client *tdx.Client, market uint16, targetCodes map[string]struct{}) map[string]string {
+	resolved := make(map[string]string)
+	if len(targetCodes) == 0 {
+		return resolved
+	}
+
+	for start := uint16(0); len(resolved) < len(targetCodes); {
+		page, err := client.GetMarketCodes(market, start)
+		if err != nil || page == nil || len(page.List) == 0 {
+			break
+		}
+
+		for _, item := range page.List {
+			if _, ok := targetCodes[item.Code]; ok {
+				resolved[item.Code] = item.Name
+			}
+		}
+
+		if page.Count == 0 || int(page.Count) < 1000 {
+			break
+		}
+		start += page.Count
+	}
+
+	return resolved
+}
+
+func lookupHotBoardName(names map[uint16]map[string]string, market uint16, code string) string {
+	if byMarket := names[market]; byMarket != nil {
+		return byMarket[code]
+	}
+	return ""
+}
+
+func parseHotBoardCategory(s string) (uint16, string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "hy":
+		return tdx.CategoryBoardHY, "hy", nil
+	case "hy2":
+		return tdx.CategoryBoardHY2, "hy2", nil
+	case "gn":
+		return tdx.CategoryBoardGN, "gn", nil
+	case "fg":
+		return tdx.CategoryBoardFG, "fg", nil
+	case "dq":
+		return tdx.CategoryBoardDQ, "dq", nil
+	default:
+		return 0, "", fmt.Errorf("unknown category %q (valid: hy|hy2|gn|fg|dq)", s)
+	}
+}
+
+func parseHotBoardQuoteSort(s string) (uint16, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "change_pct":
+		return tdx.SortChangePct, nil
+	case "change_3d", "strength":
+		return tdx.SortChange3dPct, nil
+	case "main_net":
+		return tdx.SortMainNetAmount, nil
+	case "amount":
+		return tdx.SortAmount, nil
+	case "activity":
+		return tdx.SortActivity, nil
+	case "speed_pct":
+		return tdx.SortSpeedPct, nil
+	case "price":
+		return tdx.SortPrice, nil
+	case "code":
+		return tdx.SortCode, nil
+	default:
+		return 0, fmt.Errorf("unknown sort %q (valid: change_pct|change_3d|main_net|amount|activity|speed_pct|price|code)", s)
+	}
+}
+
+func parseHotBoardMemberSort(s string) (uint16, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "change_pct":
+		return tdx.BoardMembersSortChangePct, nil
+	case "amount":
+		return tdx.BoardMembersSortAmount, nil
+	case "turnover":
+		return tdx.BoardMembersSortTurnover, nil
+	case "activity":
+		return tdx.SortActivity, nil
+	case "vol_ratio":
+		return tdx.BoardMembersSortVolRatio, nil
+	case "main_net":
+		return tdx.BoardMembersSortMainNetAmount, nil
+	default:
+		return 0, fmt.Errorf("unknown stock sort %q (valid: change_pct|amount|turnover|activity|vol_ratio|main_net)", s)
+	}
+}
+
+func makeHotBoardSnapshot(item tdx.QuotesItem, name string) hotBoardSnapshot {
+	return hotBoardSnapshot{
+		Market:    item.Market,
+		Code:      item.Code,
+		Name:      name,
+		Price:     item.Price,
+		PreClose:  item.PreClose,
+		ChangePct: calcQuoteChangePct(item.Price, item.PreClose),
+		Amount:    item.Amount,
+		RiseSpeed: item.RiseSpeed,
+		Active:    item.Active,
+	}
+}
+
+func makeHotStockSnapshot(item tdx.BoardMembersItem) hotStockSnapshot {
+	return hotStockSnapshot{
+		Market:        item.Market,
+		Code:          item.Code,
+		Name:          item.Name,
+		Close:         item.Close,
+		PreClose:      item.PreClose,
+		ChangePct:     calcChangePct(item.Close, item.PreClose),
+		MainNetAmount: item.MainNetAmount,
+		Amount:        item.Amount,
+		Turnover:      item.Turnover,
+		VolRatio:      item.VolRatio,
+		Activity:      item.Activity,
+		ConsecutiveUp: item.ConsecutiveUp,
+	}
+}
+
+func assignHotBoardHeat(entries []hotBoardEntry) {
+	if len(entries) == 0 {
+		return
+	}
+
+	changeScores := rankMetricScores(len(entries), func(i int) float64 { return entries[i].Board.ChangePct })
+	amountScores := rankMetricScores(len(entries), func(i int) float64 { return entries[i].Board.Amount })
+	speedScores := rankMetricScores(len(entries), func(i int) float64 { return entries[i].Board.RiseSpeed })
+	activeScores := rankMetricScores(len(entries), func(i int) float64 { return float64(entries[i].Board.Active) })
+
+	for i := range entries {
+		entries[i].Board.Heat = roundHeatScore(
+			0.45*changeScores[i] +
+				0.25*amountScores[i] +
+				0.15*speedScores[i] +
+				0.15*activeScores[i],
+		)
+	}
+}
+
+func assignHotStockHeat(items []hotStockSnapshot) {
+	if len(items) == 0 {
+		return
+	}
+
+	changeScores := rankMetricScores(len(items), func(i int) float64 { return float64(items[i].ChangePct) })
+	amountScores := rankMetricScores(len(items), func(i int) float64 { return float64(items[i].Amount) })
+	turnoverScores := rankMetricScores(len(items), func(i int) float64 { return float64(items[i].Turnover) })
+	volRatioScores := rankMetricScores(len(items), func(i int) float64 { return float64(items[i].VolRatio) })
+	upScores := rankMetricScores(len(items), func(i int) float64 { return float64(items[i].ConsecutiveUp) })
+
+	for i := range items {
+		items[i].Heat = roundHeatScore(
+			0.45*changeScores[i] +
+				0.20*amountScores[i] +
+				0.20*turnoverScores[i] +
+				0.10*volRatioScores[i] +
+				0.05*upScores[i],
+		)
+	}
+}
+
+func rankMetricScores(count int, value func(i int) float64) []float64 {
+	scores := make([]float64, count)
+	if count == 0 {
+		return scores
+	}
+	if count == 1 {
+		scores[0] = 100
+		return scores
+	}
+
+	indexes := make([]int, count)
+	for i := range indexes {
+		indexes[i] = i
+	}
+
+	sort.SliceStable(indexes, func(i, j int) bool {
+		return value(indexes[i]) > value(indexes[j])
+	})
+
+	for pos := 0; pos < count; {
+		end := pos + 1
+		current := value(indexes[pos])
+		for end < count && value(indexes[end]) == current {
+			end++
+		}
+
+		avgRank := float64(pos+end-1) / 2
+		percentile := 100 * (float64(count-1) - avgRank) / float64(count-1)
+		for _, idx := range indexes[pos:end] {
+			scores[idx] = percentile
+		}
+		pos = end
+	}
+
+	return scores
+}
+
+func roundHeatScore(v float64) float64 {
+	return float64(int(v*10+0.5)) / 10
+}
+
+func calcQuoteChangePct(price, preClose float64) float64 {
+	if preClose == 0 {
+		return 0
+	}
+	return (price - preClose) / preClose * 100
+}
+
+func renderHotBoardTable(w *os.File, result hotBoardOutput) {
+	fmt.Fprintf(w, "category=%s sort=%s boards=%d stock_sort=%s stock_count=%d\n\n",
+		result.Category, result.Sort, result.BoardCount, result.StockSort, result.StockCount)
+
+	for idx, entry := range result.Boards {
+		fmt.Fprintf(w, "[%02d] %-8s %-12s %-3s heat=%5.1f chg=%6.2f%% chg3d=%6.2f%% amount=%10s speed=%6.2f%% active=%d\n",
+			idx+1,
+			entry.Board.Code,
+			entry.Board.Name,
+			tdx.MarketString(entry.Board.Market),
+			entry.Board.Heat,
+			entry.Board.ChangePct,
+			entry.Board.Change3d,
+			tdx.FormatAmount(entry.Board.Amount),
+			entry.Board.RiseSpeed,
+			entry.Board.Active,
+		)
+
+		if entry.MemberError != "" {
+			fmt.Fprintf(w, "     members: %s\n\n", entry.MemberError)
+			continue
+		}
+
+		fmt.Fprintf(w, "     %-6s %-8s %-10s %6s %8s %8s %10s %8s %8s %5s %5s\n",
+			"Mkt", "Code", "Name", "Heat", "Close", "Chg%", "MainNet", "Amount", "Turn%", "UpD", "Act")
+		fmt.Fprintf(w, "     %s\n", strings.Repeat("-", 90))
+		for _, member := range entry.Members {
+			fmt.Fprintf(w, "     %-6s %-8s %-10s %6.1f %8.2f %7.2f%% %10s %8s %7.1f%% %5d %5d\n",
+				tdx.MarketString(member.Market),
+				member.Code,
+				member.Name,
+				member.Heat,
+				member.Close,
+				member.ChangePct,
+				tdx.FormatAmount(float64(member.MainNetAmount)),
+				tdx.FormatAmount(float64(member.Amount)),
+				member.Turnover,
+				member.ConsecutiveUp,
+				member.Activity,
+			)
+		}
+		fmt.Fprintln(w)
+	}
+}
+
+func renderHotBoardJSON(w *os.File, result hotBoardOutput) {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(result)
+}
+
+type boardHeatmapBoard struct {
+	Market        uint16  `json:"market"`
+	Code          string  `json:"code"`
+	Name          string  `json:"name,omitempty"`
+	Price         float64 `json:"price"`
+	PreClose      float64 `json:"pre_close"`
+	ChangePct     float64 `json:"change_pct"`
+	Change3d      float64 `json:"change_3d"`
+	MainNetAmount float64 `json:"main_net,omitempty"`
+	Amount        float64 `json:"amount"`
+	Volume        int64   `json:"volume"`
+	CurVolume     int64   `json:"cur_volume"`
+	ServerTime    string  `json:"server_time,omitempty"`
+	RiseSpeed     float64 `json:"rise_speed"`
+	ShortTurnover float32 `json:"short_turnover"`
+	Min2Amount    float32 `json:"amount_2m"`
+	VolRatio      float32 `json:"vol_ratio"`
+	Depth         float32 `json:"depth"`
+	Active        uint16  `json:"active"`
+}
+
+type boardHeatmapMember struct {
+	Market        uint16  `json:"market"`
+	Code          string  `json:"code"`
+	Name          string  `json:"name"`
+	Close         float32 `json:"close"`
+	PreClose      float32 `json:"pre_close"`
+	ChangePct     float32 `json:"change_pct"`
+	MainNetAmount float32 `json:"main_net,omitempty"`
+	Amount        float32 `json:"amount"`
+	Turnover      float32 `json:"turnover"`
+	VolRatio      float32 `json:"vol_ratio"`
+	Activity      uint32  `json:"activity"`
+	ConsecutiveUp int32   `json:"consecutive_up"`
+}
+
+type boardHeatmapOutput struct {
+	Category      string               `json:"category"`
+	Sort          string               `json:"sort"`
+	Count         int                  `json:"count"`
+	SelectedCode  string               `json:"selected_code"`
+	MemberSort    string               `json:"member_sort"`
+	MemberCount   int                  `json:"member_count"`
+	SelectedBoard boardHeatmapBoard    `json:"selected_board"`
+	Boards        []boardHeatmapBoard  `json:"boards"`
+	Members       []boardHeatmapMember `json:"members"`
+}
+
+// ---------------------------------------------------------------------------
+// board-heatmap
+// ---------------------------------------------------------------------------
+
+func runBoardHeatmap(quotesClient, boardClient *tdx.Client, args []string, w *os.File, format string) {
+	fs := flag.NewFlagSet("board-heatmap", flag.ExitOnError)
+	categoryStr := fs.String("category", "hy", "board category: hy|hy2|gn|fg|dq")
+	count := fs.Int("count", 40, "number of boards to fetch")
+	boardSortStr := fs.String("sort", "change_pct", "board sort: change_pct|change_3d|main_net|amount|activity|speed_pct|price|code")
+	selectedCode := fs.String("board", "", "selected board code (default: first board in result)")
+	memberCount := fs.Int("member-count", 40, "number of member stocks to fetch for the selected board")
+	memberSortStr := fs.String("member-sort", "change_pct", "member sort: change_pct|amount|turnover|activity|vol_ratio")
+	fs.Parse(args)
+
+	if *count <= 0 {
+		fatalf("board-heatmap: -count must be > 0")
+	}
+	if *memberCount <= 0 {
+		fatalf("board-heatmap: -member-count must be > 0")
+	}
+
+	category, categoryLabel, err := parseHotBoardCategory(*categoryStr)
+	if err != nil {
+		fatalf("board-heatmap: %v", err)
+	}
+	boardSort, err := parseHotBoardQuoteSort(*boardSortStr)
+	if err != nil {
+		fatalf("board-heatmap: %v", err)
+	}
+	memberSort, err := parseHotBoardMemberSort(*memberSortStr)
+	if err != nil {
+		fatalf("board-heatmap: %v", err)
+	}
+
+	boards, err := quotesClient.GetQuotesList(category, boardSort, 0, *count, false)
+	if err != nil {
+		fatalf("board-heatmap: get board quotes failed: %v", err)
+	}
+	if len(boards) == 0 {
+		fatalf("board-heatmap: empty board list")
+	}
+
+	boardNames := resolveHotBoardNames(quotesClient, boards)
+	boardItems := make([]boardHeatmapBoard, 0, len(boards))
+	for _, board := range boards {
+		boardItems = append(boardItems, makeBoardHeatmapBoard(board, lookupHotBoardName(boardNames, board.Market, board.Code)))
+	}
+	enrichBoardHeatmapBoards(quotesClient, boardItems)
+	if isChange3dSort(*boardSortStr) {
+		sort.SliceStable(boardItems, func(i, j int) bool {
+			return boardItems[i].Change3d > boardItems[j].Change3d
+		})
+	}
+
+	selected := *selectedCode
+	if selected == "" {
+		selected = boardItems[0].Code
+	}
+
+	selectedBoard, ok := findBoardHeatmapBoard(boardItems, selected)
+	if !ok {
+		selectedBoard, err = fetchBoardHeatmapBoard(quotesClient, selected)
+		if err != nil {
+			fatalf("board-heatmap: selected board %q not found in current board list and fallback quote failed: %v", selected, err)
+		}
+	}
+	selectedBoard.MainNetAmount = fetchBoardMainNetAmount(boardClient, selected)
+	for i := range boardItems {
+		if boardItems[i].Code == selectedBoard.Code {
+			boardItems[i].MainNetAmount = selectedBoard.MainNetAmount
+			break
+		}
+	}
+
+	members, err := boardClient.GetBoardMembers(selected, memberSort, *memberCount, tdx.SortDesc)
+	if err != nil {
+		fatalf("board-heatmap: get board members failed: %v", err)
+	}
+
+	memberItems := make([]boardHeatmapMember, 0, len(members))
+	for _, member := range members {
+		memberItems = append(memberItems, makeBoardHeatmapMember(member))
+	}
+
+	result := boardHeatmapOutput{
+		Category:      categoryLabel,
+		Sort:          *boardSortStr,
+		Count:         *count,
+		SelectedCode:  selected,
+		MemberSort:    *memberSortStr,
+		MemberCount:   *memberCount,
+		SelectedBoard: selectedBoard,
+		Boards:        boardItems,
+		Members:       memberItems,
+	}
+
+	switch strings.ToLower(format) {
+	case "table", "":
+		renderBoardHeatmapTable(w, result)
+	case "json":
+		renderBoardHeatmapJSON(w, result)
+	default:
+		fatalf("board-heatmap: unsupported format: %s", format)
+	}
+}
+
+func makeBoardHeatmapBoard(item tdx.QuotesItem, name string) boardHeatmapBoard {
+	return boardHeatmapBoard{
+		Market:        item.Market,
+		Code:          item.Code,
+		Name:          name,
+		Price:         item.Price,
+		PreClose:      item.PreClose,
+		ChangePct:     calcQuoteChangePct(item.Price, item.PreClose),
+		Amount:        item.Amount,
+		Volume:        item.Volume,
+		CurVolume:     item.CurVol,
+		ServerTime:    item.ServerTime,
+		RiseSpeed:     item.RiseSpeed,
+		ShortTurnover: item.ShortTurnover,
+		Min2Amount:    item.Min2Amount,
+		VolRatio:      item.VolRatio,
+		Depth:         item.Depth,
+		Active:        item.Active,
+	}
+}
+
+func makeBoardHeatmapMember(item tdx.BoardMembersItem) boardHeatmapMember {
+	return boardHeatmapMember{
+		Market:        item.Market,
+		Code:          item.Code,
+		Name:          item.Name,
+		Close:         item.Close,
+		PreClose:      item.PreClose,
+		ChangePct:     calcChangePct(item.Close, item.PreClose),
+		MainNetAmount: item.MainNetAmount,
+		Amount:        item.Amount,
+		Turnover:      item.Turnover,
+		VolRatio:      item.VolRatio,
+		Activity:      item.Activity,
+		ConsecutiveUp: item.ConsecutiveUp,
+	}
+}
+
+func findBoardHeatmapBoard(items []boardHeatmapBoard, code string) (boardHeatmapBoard, bool) {
+	for _, item := range items {
+		if item.Code == code {
+			return item, true
+		}
+	}
+	return boardHeatmapBoard{}, false
+}
+
+func fetchBoardHeatmapBoard(client *tdx.Client, code string) (boardHeatmapBoard, error) {
+	quotes, err := client.GetBatchQuotes([]string{normalizeBoardTickCode(code)})
+	if err == nil && len(quotes) > 0 {
+		q := quotes[0]
+		name, _ := lookupBoardNameByCode(client, q.Market, q.Code)
+		item := boardHeatmapBoard{
+			Market:        q.Market,
+			Code:          q.Code,
+			Name:          name,
+			Price:         q.Price,
+			PreClose:      q.PreClose,
+			ChangePct:     calcQuoteChangePct(q.Price, q.PreClose),
+			Amount:        float64(q.Amount),
+			Volume:        q.Volume,
+			CurVolume:     q.CurVolume,
+			ServerTime:    q.ServerTime,
+			RiseSpeed:     float64(q.RiseSpeed),
+			ShortTurnover: q.ShortTurnover,
+			Min2Amount:    q.Min2Amount,
+			VolRatio:      q.VolRatio,
+			Depth:         q.Depth,
+			Active:        q.Active,
+		}
+		item.Change3d = fetchBoardChange3dPct(client, item.Code)
+		return item, nil
+	}
+
+	tick, err := client.GetTick(normalizeBoardTickCode(code))
+	if err != nil {
+		return boardHeatmapBoard{}, err
+	}
+
+	name, _ := lookupBoardNameByCode(client, tick.Market, tick.Code)
+	item := boardHeatmapBoard{
+		Market:    tick.Market,
+		Code:      tick.Code,
+		Name:      name,
+		Price:     tick.Price,
+		PreClose:  tick.PrevClose,
+		ChangePct: tick.CalcChangeRate(),
+		Amount:    tick.Amount,
+		Volume:    tick.TotalVolume,
+		CurVolume: tick.Volume,
+		RiseSpeed: 0,
+		Active:    tick.Active1,
+	}
+	item.Change3d = fetchBoardChange3dPct(client, item.Code)
+	return item, nil
+}
+
+func enrichBoardHeatmapBoards(client *tdx.Client, items []boardHeatmapBoard) {
+	if len(items) == 0 {
+		return
+	}
+
+	codes := make([]string, 0, len(items))
+	indexByCode := make(map[string]int, len(items))
+	for i, item := range items {
+		codes = append(codes, normalizeBoardTickCode(item.Code))
+		indexByCode[item.Code] = i
+	}
+
+	quotes, err := client.GetBatchQuotes(codes)
+	if err != nil {
+		return
+	}
+
+	for _, q := range quotes {
+		idx, ok := indexByCode[q.Code]
+		if !ok {
+			continue
+		}
+		items[idx].Price = q.Price
+		items[idx].PreClose = q.PreClose
+		items[idx].ChangePct = calcQuoteChangePct(q.Price, q.PreClose)
+		items[idx].Amount = float64(q.Amount)
+		items[idx].Volume = q.Volume
+		items[idx].CurVolume = q.CurVolume
+		items[idx].ServerTime = q.ServerTime
+		items[idx].RiseSpeed = float64(q.RiseSpeed)
+		items[idx].ShortTurnover = q.ShortTurnover
+		items[idx].Min2Amount = q.Min2Amount
+		items[idx].VolRatio = q.VolRatio
+		items[idx].Depth = q.Depth
+		items[idx].Active = q.Active
+	}
+
+	for i := range items {
+		items[i].Change3d = fetchBoardChange3dPct(client, items[i].Code)
+	}
+}
+
+func enrichHotBoardEntries(client *tdx.Client, entries []hotBoardEntry) {
+	for i := range entries {
+		entries[i].Board.Change3d = fetchBoardChange3dPct(client, entries[i].Board.Code)
+	}
+}
+
+func fetchBoardChange3dPct(client *tdx.Client, code string) float64 {
+	klines, err := client.GetKline(normalizeBoardTickCode(code), tdx.PeriodDay, 4)
+	if err != nil {
+		return 0
+	}
+	return calcKlineWindowChangePct(klines, 3)
+}
+
+func fetchBoardMainNetAmount(client *tdx.Client, code string) float64 {
+	items, err := client.GetBoardMembers(code, tdx.BoardMembersSortCode, 2000, tdx.SortDesc)
+	if err != nil {
+		return 0
+	}
+	var total float64
+	for _, item := range items {
+		total += float64(item.MainNetAmount)
+	}
+	return total
+}
+
+func calcKlineWindowChangePct(klines []tdx.Kline, window int) float64 {
+	if window <= 0 || len(klines) < window+1 {
+		return 0
+	}
+	base := klines[len(klines)-window-1].Close
+	if base == 0 {
+		return 0
+	}
+	last := klines[len(klines)-1].Close
+	return (last - base) / base * 100
+}
+
+func isChange3dSort(sortName string) bool {
+	switch strings.ToLower(strings.TrimSpace(sortName)) {
+	case "change_3d", "strength":
+		return true
+	default:
+		return false
+	}
+}
+
+func lookupBoardNameByCode(client *tdx.Client, market uint16, code string) (string, bool) {
+	for start := uint16(0); ; {
+		page, err := client.GetMarketCodes(market, start)
+		if err != nil || page == nil || len(page.List) == 0 {
+			return "", false
+		}
+
+		for _, item := range page.List {
+			if item.Code == code {
+				return item.Name, true
+			}
+		}
+
+		if page.Count == 0 || int(page.Count) < 1000 {
+			return "", false
+		}
+		start += page.Count
+	}
+}
+
+func normalizeBoardTickCode(code string) string {
+	code = strings.ToLower(strings.TrimSpace(code))
+	if len(code) == 8 && (strings.HasPrefix(code, "sh") || strings.HasPrefix(code, "sz") || strings.HasPrefix(code, "bj")) {
+		return code
+	}
+	if strings.HasPrefix(code, "399") {
+		return "sz" + code
+	}
+	if strings.HasPrefix(code, "899") {
+		return "bj" + code
+	}
+	return "sh" + code
+}
+
+func renderBoardHeatmapTable(w *os.File, result boardHeatmapOutput) {
+	fmt.Fprintf(w, "category=%s sort=%s count=%d selected=%s member_sort=%s member_count=%d\n\n",
+		result.Category, result.Sort, result.Count, result.SelectedCode, result.MemberSort, result.MemberCount)
+
+	fmt.Fprintf(w, "[Boards]\n")
+	fmt.Fprintf(w, "%-8s %-12s %-4s %8s %8s %10s %12s %8s %7s %8s\n", "Code", "Name", "Mkt", "Chg%", "3d%", "MainNet", "Amount", "Speed", "ShtT%", "VolR")
+	fmt.Fprintf(w, "%s\n", strings.Repeat("-", 82))
+	for _, board := range result.Boards {
+		fmt.Fprintf(w, "%-8s %-12s %-4s %7.2f%% %7.2f%% %10s %12s %7.2f%% %6.2f%% %8.2f\n",
+			board.Code,
+			board.Name,
+			tdx.MarketString(board.Market),
+			board.ChangePct,
+			board.Change3d,
+			tdx.FormatAmount(board.MainNetAmount),
+			tdx.FormatAmount(board.Amount),
+			board.RiseSpeed,
+			board.ShortTurnover,
+			board.VolRatio,
+		)
+	}
+
+	fmt.Fprintf(w, "\n[Selected Board] %s %s\n", result.SelectedBoard.Code, result.SelectedBoard.Name)
+	fmt.Fprintf(w, "chg=%0.2f%% chg3d=%0.2f%% main_net=%s amount=%s speed=%0.2f%% short_turn=%0.2f%% vol_ratio=%0.2f amount_2m=%s active=%d time=%s\n\n",
+		result.SelectedBoard.ChangePct,
+		result.SelectedBoard.Change3d,
+		tdx.FormatAmount(result.SelectedBoard.MainNetAmount),
+		tdx.FormatAmount(result.SelectedBoard.Amount),
+		result.SelectedBoard.RiseSpeed,
+		result.SelectedBoard.ShortTurnover,
+		result.SelectedBoard.VolRatio,
+		tdx.FormatAmount(float64(result.SelectedBoard.Min2Amount)),
+		result.SelectedBoard.Active,
+		result.SelectedBoard.ServerTime,
+	)
+
+	fmt.Fprintf(w, "[Members]\n")
+	fmt.Fprintf(w, "%-6s %-8s %-10s %8s %8s %10s %8s %8s %5s %5s\n",
+		"Mkt", "Code", "Name", "Close", "Chg%", "MainNet", "Amount", "Turn%", "UpD", "Act")
+	fmt.Fprintf(w, "%s\n", strings.Repeat("-", 82))
+	for _, member := range result.Members {
+		fmt.Fprintf(w, "%-6s %-8s %-10s %8.2f %7.2f%% %10s %8s %7.1f%% %5d %5d\n",
+			tdx.MarketString(member.Market),
+			member.Code,
+			member.Name,
+			member.Close,
+			member.ChangePct,
+			tdx.FormatAmount(float64(member.MainNetAmount)),
+			tdx.FormatAmount(float64(member.Amount)),
+			member.Turnover,
+			member.ConsecutiveUp,
+			member.Activity,
+		)
+	}
+}
+
+func renderBoardHeatmapJSON(w *os.File, result boardHeatmapOutput) {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(result)
+}
+
 // ---------------------------------------------------------------------------
 // quotes
 // ---------------------------------------------------------------------------
@@ -786,7 +1685,7 @@ func renderTopBoardJSON(w *os.File, board string, items []tdx.TopBoardItem) {
 func runQuotes(client *tdx.Client, args []string, w *os.File, format string) {
 	fs := flag.NewFlagSet("quotes", flag.ExitOnError)
 	market := fs.Int("market", 6, "market: 0=SZ, 1=SH, 2=BJ, 6=A股, 7=B股, 8=科创板, 12=北证, 14=创业板")
-	sortStr := fs.String("sort", "change_pct", "sort field: change_pct|amplitude_pct|turnover_rate|vol_ratio|speed_pct|code|price|volume|amount|pe|entrust|inout|locked_ratio|locked_amount|float_mcap|total_mcap|strength|activity|short_turnover|vol_speed|main_net|amount_2m")
+	sortStr := fs.String("sort", "change_pct", "sort field: change_pct|change_3d|amplitude_pct|turnover_rate|vol_ratio|speed_pct|code|price|volume|amount|pe|entrust|inout|locked_ratio|locked_amount|float_mcap|total_mcap|strength|activity|short_turnover|vol_speed|main_net|amount_2m")
 	count := fs.Int("count", 20, "number of stocks")
 	reverse := fs.Bool("reverse", false, "sort ascending")
 	filterStr := fs.String("filter", "", "exclude types (comma OR): new|kcb|st|cyb|bj")
@@ -820,8 +1719,8 @@ func runQuotes(client *tdx.Client, args []string, w *os.File, format string) {
 		sortType = tdx.SortFloatMcap
 	case "total_mcap":
 		sortType = tdx.SortTotalMcapAB
-	case "strength":
-		sortType = tdx.SortStrengthPct
+	case "change_3d", "strength":
+		sortType = tdx.SortChange3dPct
 	case "speed_pct":
 		sortType = tdx.SortSpeedPct
 	case "activity":
@@ -987,18 +1886,20 @@ func calcChangePct(close, preClose float32) float32 {
 func runBoardMembers(client *tdx.Client, args []string, w *os.File, format string) {
 	fs := flag.NewFlagSet("board-members", flag.ExitOnError)
 	board := fs.String("board", "6", "board code: 0=SH, 2=SZ, 6=A股, 7=B股, 8=科创板, 12=北证, 14=创业板")
-	sortStr := fs.String("sort", "change_pct", "sort: change_pct|code|amount|turnover")
+	sortStr := fs.String("sort", "change_pct", "sort: change_pct|code|amount|turnover|vol_ratio|main_net")
+	sortTypeRaw := fs.Int("sort-type", -1, "raw sort type override for 0x122C protocol")
 	count := fs.Int("count", 20, "number of stocks")
 	fs.Parse(args)
 
-	sortType := tdx.SortChangePct
-	switch *sortStr {
-	case "code":
-		sortType = tdx.SortCode
-	case "amount":
-		sortType = 0x07
-	case "turnover":
-		sortType = 0x1b
+	sortType := tdx.BoardMembersSortChangePct
+	if *sortTypeRaw >= 0 {
+		sortType = uint16(*sortTypeRaw)
+	} else {
+		var err error
+		sortType, err = parseBoardMembersSort(*sortStr)
+		if err != nil {
+			fatalf("board-members: %v", err)
+		}
 	}
 
 	items, err := client.GetBoardMembers(*board, sortType, *count, tdx.SortDesc)
@@ -1016,16 +1917,35 @@ func runBoardMembers(client *tdx.Client, args []string, w *os.File, format strin
 	}
 }
 
+func parseBoardMembersSort(s string) (uint16, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "change_pct":
+		return tdx.BoardMembersSortChangePct, nil
+	case "code":
+		return tdx.BoardMembersSortCode, nil
+	case "amount":
+		return tdx.BoardMembersSortAmount, nil
+	case "turnover":
+		return tdx.BoardMembersSortTurnover, nil
+	case "vol_ratio":
+		return tdx.BoardMembersSortVolRatio, nil
+	case "main_net":
+		return tdx.BoardMembersSortMainNetAmount, nil
+	default:
+		return 0, fmt.Errorf("unknown sort %q (valid: change_pct|code|amount|turnover|vol_ratio|main_net)", s)
+	}
+}
+
 func renderBoardMembersTable(w *os.File, items []tdx.BoardMembersItem) {
-	fmt.Fprintf(w, "%-6s %-8s %-10s %8s %8s %8s %7s %8s %8s %8s %8s %7s %5s %5s %7s\n",
-		"Mkt", "Code", "Name", "Close", "PrcCls", "Open", "Chg%", "Amount", "Turn%", "VolR", "Avg", "PE", "UpD", "Act", "5d%")
+	fmt.Fprintf(w, "%-6s %-8s %-10s %8s %8s %8s %7s %10s %8s %8s %8s %8s %7s %5s %5s %7s\n",
+		"Mkt", "Code", "Name", "Close", "PrcCls", "Open", "Chg%", "MainNet", "Amount", "Turn%", "VolR", "Avg", "PE", "UpD", "Act", "5d%")
 	fmt.Fprintf(w, "%s\n", strings.Repeat("-", 120))
 	for _, item := range items {
 		changePct := calcChangePct(item.Close, item.PreClose)
-		fmt.Fprintf(w, "%-6s %-8s %-10s %8.2f %8.2f %8.2f %6.2f%% %8.0f %7.1f%% %7.2f %8.2f %6.1f %4d %4d %6.1f%%\n",
+		fmt.Fprintf(w, "%-6s %-8s %-10s %8.2f %8.2f %8.2f %6.2f%% %10s %8.0f %7.1f%% %7.2f %8.2f %6.1f %4d %4d %6.1f%%\n",
 			tdx.MarketString(item.Market), item.Code, item.Name,
 			item.Close, item.PreClose, item.Open, changePct,
-			item.Amount, item.Turnover, item.VolRatio, item.AvgPrice,
+			tdx.FormatAmount(float64(item.MainNetAmount)), item.Amount, item.Turnover, item.VolRatio, item.AvgPrice,
 			item.PEDynamic, item.ConsecutiveUp, item.Activity, item.Change5d)
 	}
 }
@@ -1234,6 +2154,8 @@ func availableCommands() string {
   company-content   F10 section content
   topboard          9-in-1 ranking boards (涨跌幅/振幅/换手率)
   quotes            Sorted quotes list (by any field)
+	board-heatmap     Board heatmap dataset (板块列表 + 选中板块成分股)
+	hot-board         Hot boards with top member stocks (板块排行 + 个股)
   limit             Limit up/down stocks (涨跌停)
   board-members     Board member quotes (bitmap fields)
   lhb               Dragon-Tiger list (龙虎榜)
@@ -1248,6 +2170,8 @@ Examples:
   tdx-cli finance -code sh600000
   tdx-cli topboard -market 6 -size 10 -board increase
   tdx-cli quotes -market 6 -sort change_pct -count 10
+	tdx-cli -format json board-heatmap -category hy -count 40 -board 881314 -member-count 40
+	tdx-cli hot-board -category gn -board-count 10 -stock-count 3
   tdx-cli limit -board 6 -type up
   tdx-cli board-members -board 6 -count 10
   tdx-cli lhb -code 002471
