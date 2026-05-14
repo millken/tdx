@@ -107,17 +107,12 @@ func (c *MainClient) GetXdXr(code string) ([]XdXrItem, error) {
 		}
 	}
 
-	c.drainPending()
-
 	packet, err := RequestXdXrFrame(0x000A0401, 0x01, market, normalizedCode)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.sendRaw(packet); err != nil {
-		return nil, err
-	}
 
-	response, err := c.waitForCMD(DirectFrameTypeXdXr, 8*time.Second)
+	response, err := c.do(packet, DirectFrameTypeXdXr, 8*time.Second)
 	if err != nil {
 		return nil, err
 	}

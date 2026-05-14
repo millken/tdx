@@ -196,17 +196,12 @@ func (c *MainClient) GetBoardMembers(board string, sortType uint16, count int, s
 	const pageSize = 80
 
 	for len(allItems) < count {
-		c.drainPending()
-
 		packet, err := RequestBoardMembersFrame(0x000A0401, 0x01, boardCode, sortType, start, pageSize, sortOrder, defaultBitmap)
 		if err != nil {
 			return nil, err
 		}
-		if err := c.sendRaw(packet); err != nil {
-			return nil, err
-		}
 
-		response, err := c.waitForCMD(DirectFrameTypeBoardMembers, 8*time.Second)
+		response, err := c.do(packet, DirectFrameTypeBoardMembers, 8*time.Second)
 		if err != nil {
 			return nil, err
 		}

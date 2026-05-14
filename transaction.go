@@ -56,17 +56,12 @@ func (c *MainClient) GetTransaction(code string, date string, count int) ([]Tran
 		}
 	}
 
-	c.drainPending()
-
 	packet, err := RequestTransactionFrame(0x03000802, 0x01, market, normalizedCode, 0, uint16(count))
 	if err != nil {
 		return nil, err
 	}
-	if err := c.sendRaw(packet); err != nil {
-		return nil, err
-	}
 
-	response, err := c.waitForCMD(DirectFrameTypeTransaction, 8*time.Second)
+	response, err := c.do(packet, DirectFrameTypeTransaction, 8*time.Second)
 	if err != nil {
 		return nil, err
 	}

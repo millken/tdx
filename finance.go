@@ -81,17 +81,12 @@ func (c *MainClient) GetFinance(code string) (*FinanceInfo, error) {
 		}
 	}
 
-	c.drainPending()
-
 	packet, err := RequestFinanceFrame(0x000A0401, 0x01, market, normalizedCode)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.sendRaw(packet); err != nil {
-		return nil, err
-	}
 
-	response, err := c.waitForCMD(DirectFrameTypeFinance, 8*time.Second)
+	response, err := c.do(packet, DirectFrameTypeFinance, 8*time.Second)
 	if err != nil {
 		return nil, err
 	}

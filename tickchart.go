@@ -51,17 +51,12 @@ func (c *MainClient) GetTickChart(code string, count int) ([]TickChart, error) {
 		}
 	}
 
-	c.drainPending()
-
 	packet, err := RequestTickChartFrame(0x01000802, 0x00, market, normalizedCode, 0, uint16(count))
 	if err != nil {
 		return nil, err
 	}
-	if err := c.sendRaw(packet); err != nil {
-		return nil, err
-	}
 
-	response, err := c.waitForCMD(DirectFrameTypeTickChart, 8*time.Second)
+	response, err := c.do(packet, DirectFrameTypeTickChart, 8*time.Second)
 	if err != nil {
 		return nil, err
 	}

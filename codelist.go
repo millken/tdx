@@ -49,17 +49,12 @@ func (c *MainClient) GetMarketCodes(market uint16, start uint16) (*MarketCodePag
 		return nil, err
 	}
 
-	c.drainPending()
-
 	packet, err := RequestCodeListFrame(0x01020304, 0x01, market, start)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.sendRaw(packet); err != nil {
-		return nil, err
-	}
 
-	response, err := c.waitForCMD(DirectFrameTypeCodeList, 8*time.Second)
+	response, err := c.do(packet, DirectFrameTypeCodeList, 8*time.Second)
 	if err != nil {
 		return nil, err
 	}

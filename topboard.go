@@ -55,17 +55,12 @@ func (c *MainClient) GetTopBoard(category uint16, size int) (*TopBoardResult, er
 		return nil, err
 	}
 
-	c.drainPending()
-
 	packet, err := RequestTopBoardFrame(0x000A0401, 0x01, category, uint8(size))
 	if err != nil {
 		return nil, err
 	}
-	if err := c.sendRaw(packet); err != nil {
-		return nil, err
-	}
 
-	response, err := c.waitForCMD(DirectFrameTypeTopBoard, 8*time.Second)
+	response, err := c.do(packet, DirectFrameTypeTopBoard, 8*time.Second)
 	if err != nil {
 		return nil, err
 	}

@@ -115,17 +115,12 @@ func (c *MainClient) GetTicks(codes []string) ([]Tick, error) {
 		stocks = append(stocks, QuoteStock{Market: byte(market), Code: normalizedCode})
 	}
 
-	c.drainPending()
-
 	packet, err := RequestTickFrame(0x000A0401, 0x01, stocks)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.sendRaw(packet); err != nil {
-		return nil, err
-	}
 
-	response, err := c.waitForCMD(DirectFrameTypeTick, 8*time.Second)
+	response, err := c.do(packet, DirectFrameTypeTick, 8*time.Second)
 	if err != nil {
 		return nil, err
 	}

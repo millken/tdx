@@ -74,17 +74,12 @@ func (c *MainClient) GetBatchQuotes(codes []string) ([]BatchQuote, error) {
 		stocks = append(stocks, QuoteStock{Market: byte(market), Code: normalizedCode})
 	}
 
-	c.drainPending()
-
 	packet, err := RequestBatchQuoteFrame(0x000A0401, 0x01, stocks)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.sendRaw(packet); err != nil {
-		return nil, err
-	}
 
-	response, err := c.waitForCMD(DirectFrameTypeBatchQuote, 8*time.Second)
+	response, err := c.do(packet, DirectFrameTypeBatchQuote, 8*time.Second)
 	if err != nil {
 		return nil, err
 	}

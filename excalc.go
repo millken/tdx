@@ -60,18 +60,18 @@ type MarketStatEntry struct {
 
 // StockQuote contains real-time quote data for one stock (from real_hq.js).
 type StockQuote struct {
-	Code      string  // 股票代码
-	TotalMcap float32 // 总市值（元）（proto JZsz id:3）
-	YClose    float32 // 昨收价（元）（proto ZClose id:4）
-	Now       float32 // 最新价（元）（proto Now id:5）
-	DayChgPct float32 // 当前涨幅（小数，-0.0165=-1.65%）（proto dqzf id:6）
-	Zangsu    float32 // 涨速（proto fZangsu id:7）
-	Turnover  float32 // 换手率百分比（proto fHSL id:8）
-	VolRatio  float32 // 量比（proto FlianB id:9）
-	Chg3d     float32 // 3日涨幅（小数）（proto ZAFPre3 id:10）
+	Code       string  // 股票代码
+	TotalMcap  float32 // 总市值（元）（proto JZsz id:3）
+	YClose     float32 // 昨收价（元）（proto ZClose id:4）
+	Now        float32 // 最新价（元）（proto Now id:5）
+	DayChgPct  float32 // 当前涨幅（小数，-0.0165=-1.65%）（proto dqzf id:6）
+	Zangsu     float32 // 涨速（proto fZangsu id:7）
+	Turnover   float32 // 换手率百分比（proto fHSL id:8）
+	VolRatio   float32 // 量比（proto FlianB id:9）
+	Chg3d      float32 // 3日涨幅（小数）（proto ZAFPre3 id:10）
 	MainNetAmt float32 // 主力净额（元，正=净买入，负=净卖出）（proto fAmoSum id:11）
-	FloatMcap float32 // 流通市值（元）（proto JLtsz id:12）
-	Amount    float32 // 成交额（元）（proto Amount id:13）
+	FloatMcap  float32 // 流通市值（元）（proto JLtsz id:12）
+	Amount     float32 // 成交额（元）（proto Amount id:13）
 }
 
 // StockInfo contains stock metadata (from codetable_N.js).
@@ -230,18 +230,18 @@ func (c *ExcalcClient) GetRealHQ() ([]StockQuote, error) {
 //	  repeated StockQuote stocks = 1;
 //	}
 //	message StockQuote {
-//	  string  code       = 2;  // 股票代码（6位）
-//	  float   total_mcap = 3;  // 总市值（元）= 总股本 × NOW  ✓
-//	  float   now        = 4;  // 最新价（元）  ✓
-//	  float   day_close  = 5;  // 今日K线收盘价（盘中=实时价）  ✓
-//	  float   day_chg    = 6;  // (day_close - now) / now  ✓
-//	  float   field7     = 7;  // 疑似 N 日历史涨幅，尚未确认
-//	  float   turnover   = 8;  // 换手率百分比（0.21 = 0.21%）  ✓
-//	  float   vol_ratio  = 9;  // 量比（≥0，1.0=正常速度）  ✓
-//	  float   change     = 10; // 涨跌幅（有符号小数，-0.0165 = -1.65%）  ✓
-//	  float   field11    = 11; // 疑似资金净流向，尚未确认
-//	  float   float_mcap = 12; // 流通市值（元）= 流通股本 × NOW  ✓
-//	  float   amount     = 13; // 成交额（元）  ✓
+//	  string  stockcode = 2;  // 股票代码（6位）
+//	  float   JZsz      = 3;  // 总市值（元）
+//	  float   ZClose    = 4;  // 昨收价（元）
+//	  float   Now       = 5;  // 最新价（元）
+//	  float   dqzf      = 6;  // 当前涨幅（小数，-0.0165 = -1.65%）
+//	  float   fZangsu   = 7;  // 涨速
+//	  float   fHSL      = 8;  // 换手率百分比（1.23 = 1.23%）
+//	  float   FlianB    = 9;  // 量比
+//	  float   ZAFPre3   = 10; // 3日涨幅（小数）
+//	  float   fAmoSum   = 11; // 主力净额（元，正=净买入，负=净卖出）
+//	  float   JLtsz     = 12; // 流通市值（元）
+//	  float   Amount    = 13; // 成交额（元）
 //	}
 func parseRealHQ(data []byte) ([]StockQuote, error) {
 	var quotes []StockQuote
@@ -401,16 +401,37 @@ func (c *ExcalcClient) GetCodeTable(n int) ([]StockInfo, error) {
 	return out, nil
 }
 
-// knownCodeTableIDs lists the codetable_N.js IDs observed in TDX traffic.
-var knownCodeTableIDs = []int{12, 13, 14, 15, 16, 17, 18}
+// BoardType identifies a board classification type in codetable_N.js.
+// Each type corresponds to a specific codetable_N.js file on the excalc server.
+// IndustryCode (field5) prefix: 880xxx = concept/style/region, 881xxx = research industry.
+type BoardType int
+
+const (
+	BoardConcept   BoardType = 12 // 概念板块 (codetable_12, ~5070 boards, prefix 880)
+	BoardStyle     BoardType = 13 // 风格板块 (codetable_13, ~4169 boards, prefix 880)
+	BoardRegion    BoardType = 14 // 地区板块 (codetable_14, ~32 boards, prefix 880)
+	BoardIndustry1 BoardType = 16 // 研究一级行业 (codetable_16, ~30 boards, prefix 881)
+	BoardIndustry2 BoardType = 17 // 研究二级行业 (codetable_17, ~127 boards, prefix 881)
+	BoardIndustry3 BoardType = 18 // 研究三级行业 (codetable_18, ~344 boards, prefix 881)
+)
+
+// allBoardTypes lists all valid board types (codetable_15 does not exist).
+var allBoardTypes = []BoardType{
+	BoardConcept, BoardStyle, BoardRegion,
+	BoardIndustry1, BoardIndustry2, BoardIndustry3,
+}
+
+// GetBoardStocks fetches the stock-board mapping for a specific board type.
+func (c *ExcalcClient) GetBoardStocks(bt BoardType) ([]StockInfo, error) {
+	return c.GetCodeTable(int(bt))
+}
 
 // GetAllStocks fetches stock lists from all known codetable_N.js files.
 func (c *ExcalcClient) GetAllStocks() ([]StockInfo, error) {
 	var out []StockInfo
-	for _, n := range knownCodeTableIDs {
-		stocks, err := c.GetCodeTable(n)
+	for _, bt := range allBoardTypes {
+		stocks, err := c.GetCodeTable(int(bt))
 		if err != nil {
-			// Ignore missing tables
 			continue
 		}
 		out = append(out, stocks...)

@@ -119,17 +119,12 @@ func (c *MainClient) GetKline(code string, period string, count int) ([]Kline, e
 
 	kind := inferKlineKind(normalizedCode, market)
 
-	c.drainPending()
-
 	packet, err := RequestKLineOffsetFrame(0x01D20801, 0x01, market, normalizedCode, pv.period, pv.times, 0, uint16(count))
 	if err != nil {
 		return nil, err
 	}
-	if err := c.sendRaw(packet); err != nil {
-		return nil, err
-	}
 
-	response, err := c.waitForCMD(DirectFrameTypeKLineOffset, 8*time.Second)
+	response, err := c.do(packet, DirectFrameTypeKLineOffset, 8*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -165,17 +160,12 @@ func (c *ExClient) GetKline(code string, period string, count int) ([]Kline, err
 		return nil, err
 	}
 
-	c.drainPending()
-
 	packet, err := RequestFundKLineFrame(normalizedCode, pv.period, pv.times, 0, uint32(count))
 	if err != nil {
 		return nil, err
 	}
-	if err := c.sendRaw(packet); err != nil {
-		return nil, err
-	}
 
-	response, err := c.waitForCMD(FundKlineCMD, c.timeout)
+	response, err := c.do(packet, FundKlineCMD, c.timeout)
 	if err != nil {
 		return nil, err
 	}

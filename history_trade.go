@@ -60,17 +60,12 @@ func (c *MainClient) GetHistoryTrade(date string, code string, count int) ([]His
 		}
 	}
 
-	c.drainPending()
-
 	packet, err := RequestHistoryTradeFrame(0x00000000, 0x01, date, market, normalizedCode, 0, uint16(count))
 	if err != nil {
 		return nil, err
 	}
-	if err := c.sendRaw(packet); err != nil {
-		return nil, err
-	}
 
-	response, err := c.waitForCMD(DirectFrameTypeHistoryTrade, 8*time.Second)
+	response, err := c.do(packet, DirectFrameTypeHistoryTrade, 8*time.Second)
 	if err != nil {
 		return nil, err
 	}

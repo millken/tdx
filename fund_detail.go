@@ -90,17 +90,12 @@ func (c *ExClient) GetFundDetailMode(code string, mode uint16) (*FundDetail, err
 		return nil, err
 	}
 
-	c.drainPending()
-
 	packet, err := RequestFundDetailFrame(normalizedCode, mode)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.sendRaw(packet); err != nil {
-		return nil, err
-	}
 
-	response, err := c.waitForCMD(FundDetailCMD, c.timeout)
+	response, err := c.do(packet, FundDetailCMD, c.timeout)
 	if err != nil {
 		return nil, err
 	}

@@ -45,17 +45,12 @@ func (c *MainClient) GetCompanyCategory(code string) ([]CompanyCategoryItem, err
 		}
 	}
 
-	c.drainPending()
-
 	packet, err := RequestCompanyCategoryFrame(0x000A0401, 0x01, market, normalizedCode)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.sendRaw(packet); err != nil {
-		return nil, err
-	}
 
-	response, err := c.waitForCMD(DirectFrameTypeCompanyCat, 8*time.Second)
+	response, err := c.do(packet, DirectFrameTypeCompanyCat, 8*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -128,17 +123,12 @@ func (c *MainClient) GetCompanyContent(code string, filename string, start uint3
 		}
 	}
 
-	c.drainPending()
-
 	packet, err := RequestCompanyContentFrame(0x000A0401, 0x01, market, normalizedCode, filename, start, length)
 	if err != nil {
 		return "", err
 	}
-	if err := c.sendRaw(packet); err != nil {
-		return "", err
-	}
 
-	response, err := c.waitForCMD(DirectFrameTypeCompanyCtn, 8*time.Second)
+	response, err := c.do(packet, DirectFrameTypeCompanyCtn, 8*time.Second)
 	if err != nil {
 		return "", err
 	}

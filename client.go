@@ -13,6 +13,7 @@ import (
 
 type clientConn struct {
 	mu           sync.Mutex
+	reqMu        sync.Mutex // serializes drain+send+wait round-trips against concurrent callers
 	conn         net.Conn
 	addr         string
 	closed       bool
@@ -211,13 +212,20 @@ func (c *clientConn) Addr() string {
 }
 
 // IsAlive reports whether the underlying connection is still active.
+// It checks the closed flag and the done channel set by the listen goroutine.
+// A TCP-level peek is intentionally avoided: setting a read deadline on the
+// shared net.Conn races with the listen() goroutine's bufio.Reader and would
+// cause the listener to see a spurious timeout and exit.
 func (c *clientConn) IsAlive() bool {
 	select {
 	case <-c.done:
 		return false
 	default:
-		return !c.closed
 	}
+	c.mu.Lock()
+	closed := c.closed || c.conn == nil
+	c.mu.Unlock()
+	return !closed
 }
 
 // ---------------------------------------------------------------------------
@@ -432,6 +440,8 @@ func (c *clientConn) waitFor(serviceID, cmd uint16, timeout time.Duration) (*Res
 			if serviceID == 0 && pkt.Header.CMD == cmd {
 				return pkt, nil
 			}
+		case <-c.done:
+			return nil, fmt.Errorf("connection closed waiting cmd=0x%04X", cmd)
 		case <-deadline.C:
 			return nil, fmt.Errorf("timeout waiting service=0x%04X cmd=0x%04X", serviceID, cmd)
 		}
@@ -452,6 +462,20 @@ func (c *clientConn) drainPending() {
 			return
 		}
 	}
+}
+
+// do performs a single request/response round-trip serialized against
+// other concurrent users of the same connection. The shared response channel
+// makes interleaved drainPending/sendRaw/waitForCMD calls unsafe; this helper
+// holds reqMu for the entire roundtrip.
+func (c *clientConn) do(packet []byte, cmd uint16, timeout time.Duration) (*ResponsePacket, error) {
+	c.reqMu.Lock()
+	defer c.reqMu.Unlock()
+	c.drainPending()
+	if err := c.sendRaw(packet); err != nil {
+		return nil, err
+	}
+	return c.waitForCMD(cmd, timeout)
 }
 
 // ensureConn returns error if client is not connected.

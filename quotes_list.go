@@ -122,8 +122,6 @@ func (c *MainClient) GetQuotesList(category uint16, sortType uint16, start int, 
 		return nil, err
 	}
 
-	c.drainPending()
-
 	sortReverse := SortDesc
 	if sortType == SortCode {
 		sortReverse = SortNone
@@ -151,11 +149,8 @@ func (c *MainClient) GetQuotesList(category uint16, sortType uint16, start int, 
 	if err != nil {
 		return nil, err
 	}
-	if err := c.sendRaw(packet); err != nil {
-		return nil, err
-	}
 
-	response, err := c.waitForCMD(DirectFrameTypeQuotesList, 8*time.Second)
+	response, err := c.do(packet, DirectFrameTypeQuotesList, 8*time.Second)
 	if err != nil {
 		return nil, err
 	}
