@@ -74,23 +74,67 @@ var periodMap = map[string]struct {
 	PeriodYear:     {KlinePeriodYear, 1},
 }
 
-// GetKline retrieves K-line data for the given stock code and period.
+// Per-request kline limits imposed by the wire format.
+const (
+	// MaxKlineCount is the most bars a single kline request can return.
+	MaxKlineCount = 800
+
+	// MaxKlineStart is the largest start offset the 7709 main quote protocol
+	// accepts: the field is two bytes wide (see RequestKLineOffsetFrame), so
+	// history beyond this many bars is unreachable. For 5-minute bars that is
+	// roughly 65535/48 ≈ 1365 trading days.
+	MaxKlineStart = 65535
+
+	// MaxFundKlineStart is the equivalent limit on the 7727 extension protocol,
+	// whose start field is four bytes wide (see RequestFundKLineFrame).
+	MaxFundKlineStart = math.MaxUint32
+)
+
+// GetKline retrieves the most recent K-line bars for the given stock code and
+// period. It is shorthand for GetKlineFrom with a zero start offset.
 //
 // Parameters:
 //   - code: stock code, supports "600000", "sh600000", "SH600000" formats
 //   - period: one of Period* constants (e.g. "day", "5m", "1m")
-//   - count: number of bars to retrieve, max 800
+//   - count: number of bars to retrieve, max MaxKlineCount
 //
 // Example:
 //
 //	klines, err := c.GetKline("sh600000", "day", 100)
 func (c *MainClient) GetKline(code string, period string, count int) ([]Kline, error) {
+	return c.GetKlineFrom(code, period, 0, count)
+}
+
+// GetKlineFrom retrieves K-line bars offset back from the most recent one, so
+// callers can page through history deeper than one request can carry.
+//
+// start counts bars backwards from the latest bar: 0 returns the newest count
+// bars, count returns the batch immediately older than those, and so on. Each
+// batch is itself in ascending time order.
+//
+// Paging a full history walks start upwards until a short batch comes back:
+//
+//	var history []tdx.Kline
+//	for start := 0; start <= tdx.MaxKlineStart; start += tdx.MaxKlineCount {
+//		batch, err := c.GetKlineFrom(code, tdx.PeriodDay, start, tdx.MaxKlineCount)
+//		if err != nil {
+//			return nil, err
+//		}
+//		history = append(batch, history...) // older batch goes in front
+//		if len(batch) < tdx.MaxKlineCount {
+//			break // reached the earliest bar the server holds
+//		}
+//	}
+func (c *MainClient) GetKlineFrom(code string, period string, start, count int) ([]Kline, error) {
 	if err := c.ensureConn(); err != nil {
 		return nil, err
 	}
 
-	if count <= 0 || count > 800 {
-		return nil, fmt.Errorf("tdx: kline count must be 1..800, got %d", count)
+	if count <= 0 || count > MaxKlineCount {
+		return nil, fmt.Errorf("tdx: kline count must be 1..%d, got %d", MaxKlineCount, count)
+	}
+	if start < 0 || start > MaxKlineStart {
+		return nil, fmt.Errorf("tdx: kline start must be 0..%d, got %d", MaxKlineStart, start)
 	}
 
 	pv, ok := periodMap[strings.ToLower(period)]
@@ -114,12 +158,12 @@ func (c *MainClient) GetKline(code string, period string, count int) ([]Kline, e
 			return nil, err
 		}
 		defer exClient.Close()
-		return exClient.GetKline(normalizedCode, period, count)
+		return exClient.GetKlineFrom(normalizedCode, period, start, count)
 	}
 
 	kind := inferKlineKind(normalizedCode, market)
 
-	packet, err := RequestKLineOffsetFrame(0x01D20801, 0x01, market, normalizedCode, pv.period, pv.times, 0, uint16(count))
+	packet, err := RequestKLineOffsetFrame(0x01D20801, 0x01, market, normalizedCode, pv.period, pv.times, uint16(start), uint16(count))
 	if err != nil {
 		return nil, err
 	}
@@ -136,14 +180,24 @@ func (c *MainClient) GetKline(code string, period string, count int) ([]Kline, e
 	return DecodeKlines(response.Body.Decoded, normalizedCode, market, pv.period, kind)
 }
 
-// GetKline retrieves fund K-line data via the 7727 extension quote protocol.
+// GetKline retrieves the most recent fund K-line bars via the 7727 extension
+// quote protocol. It is shorthand for GetKlineFrom with a zero start offset.
 func (c *ExClient) GetKline(code string, period string, count int) ([]Kline, error) {
+	return c.GetKlineFrom(code, period, 0, count)
+}
+
+// GetKlineFrom retrieves fund K-line bars offset back from the most recent one.
+// See MainClient.GetKlineFrom for the paging semantics of start.
+func (c *ExClient) GetKlineFrom(code string, period string, start, count int) ([]Kline, error) {
 	if err := c.ensureConn(); err != nil {
 		return nil, err
 	}
 
-	if count <= 0 || count > 800 {
-		return nil, fmt.Errorf("tdx: kline count must be 1..800, got %d", count)
+	if count <= 0 || count > MaxKlineCount {
+		return nil, fmt.Errorf("tdx: kline count must be 1..%d, got %d", MaxKlineCount, count)
+	}
+	if start < 0 || start > MaxFundKlineStart {
+		return nil, fmt.Errorf("tdx: fund kline start must be 0..%d, got %d", MaxFundKlineStart, start)
 	}
 
 	pv, ok := periodMap[strings.ToLower(period)]
@@ -160,7 +214,7 @@ func (c *ExClient) GetKline(code string, period string, count int) ([]Kline, err
 		return nil, err
 	}
 
-	packet, err := RequestFundKLineFrame(normalizedCode, pv.period, pv.times, 0, uint32(count))
+	packet, err := RequestFundKLineFrame(normalizedCode, pv.period, pv.times, uint32(start), uint32(count))
 	if err != nil {
 		return nil, err
 	}

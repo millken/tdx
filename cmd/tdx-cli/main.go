@@ -189,13 +189,14 @@ func runKline(client *tdx.Client, args []string, w *os.File, format string) {
 	code := fs.String("code", "", "stock code (e.g. 600000, sh600000)")
 	period := fs.String("period", "day", "kline period: 1m|5m|15m|30m|60m|day|week|month|quarter|year")
 	count := fs.Int("count", 10, "number of bars (max 800)")
+	start := fs.Int("start", 0, "bars to skip back from the latest (0 = newest batch)")
 	fs.Parse(args)
 
 	if *code == "" {
 		fatalf("kline: -code is required")
 	}
 
-	klines, err := client.GetKline(*code, *period, *count)
+	klines, err := client.GetKlineFrom(*code, *period, *start, *count)
 	if err != nil {
 		fatalf("get kline failed: %v", err)
 	}
