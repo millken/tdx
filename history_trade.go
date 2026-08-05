@@ -31,6 +31,7 @@ func RequestHistoryTradeFrame(msgID uint32, control byte, date string, market ui
 }
 
 // GetHistoryTrade retrieves historical intraday trade records for the given stock code.
+// It is shorthand for GetHistoryTradeFrom with a zero start offset.
 //
 // Parameters:
 //   - date: trade date, format "20060102" or "2006-01-02"
@@ -41,12 +42,23 @@ func RequestHistoryTradeFrame(msgID uint32, control byte, date string, market ui
 //
 //	trades, err := c.GetHistoryTrade("20260421", "sh600000", 500)
 func (c *MainClient) GetHistoryTrade(date string, code string, count int) ([]HistoryTrade, error) {
+	return c.GetHistoryTradeFrom(date, code, 0, count)
+}
+
+// GetHistoryTradeFrom retrieves historical intraday trade records offset from
+// the start of the day, so callers can page through days with more trades than
+// one request can carry. start counts records forward from the first trade of
+// the day; page start upwards until a short batch comes back.
+func (c *MainClient) GetHistoryTradeFrom(date string, code string, start, count int) ([]HistoryTrade, error) {
 	if err := c.ensureConn(); err != nil {
 		return nil, err
 	}
 
 	if count <= 0 || count > 2000 {
 		return nil, fmt.Errorf("tdx: history trade count must be 1..2000, got %d", count)
+	}
+	if start < 0 || start > 65535 {
+		return nil, fmt.Errorf("tdx: history trade start must be 0..65535, got %d", start)
 	}
 
 	normalizedCode, market, hasPrefixedMarket, err := normalizeKlineCode(code)
@@ -60,7 +72,7 @@ func (c *MainClient) GetHistoryTrade(date string, code string, count int) ([]His
 		}
 	}
 
-	packet, err := RequestHistoryTradeFrame(0x00000000, 0x01, date, market, normalizedCode, 0, uint16(count))
+	packet, err := RequestHistoryTradeFrame(0x00000000, 0x01, date, market, normalizedCode, uint16(start), uint16(count))
 	if err != nil {
 		return nil, err
 	}
@@ -74,11 +86,11 @@ func (c *MainClient) GetHistoryTrade(date string, code string, count int) ([]His
 		return nil, fmt.Errorf("tdx: empty history trade response")
 	}
 
-	return DecodeHistoryTrades(response.Body.Decoded, date)
+	return DecodeHistoryTrades(response.Body.Decoded, normalizedCode, date)
 }
 
 // DecodeHistoryTrades decodes a 0x0FB5 history trade response body.
-func DecodeHistoryTrades(body []byte, date string) ([]HistoryTrade, error) {
+func DecodeHistoryTrades(body []byte, code string, date string) ([]HistoryTrade, error) {
 	if len(body) < 6 {
 		return nil, fmt.Errorf("history trade body too short: %d", len(body))
 	}
@@ -86,6 +98,7 @@ func DecodeHistoryTrades(body []byte, date string) ([]HistoryTrade, error) {
 	if err != nil {
 		return nil, err
 	}
+	scale := transactionPriceScale(code)
 
 	count := int(binary.LittleEndian.Uint16(body[:2]))
 	body = body[6:]
@@ -126,7 +139,7 @@ func DecodeHistoryTrades(body []byte, date string) ([]HistoryTrade, error) {
 
 		items = append(items, HistoryTrade{
 			Time:   t,
-			Price:  milliToYuan(lastPriceMilli),
+			Price:  milliToYuan(lastPriceMilli) / float64(scale),
 			Volume: volume,
 			Status: status,
 		})

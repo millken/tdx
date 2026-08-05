@@ -57,6 +57,16 @@ const (
 	KlinePeriodYear     uint16 = 11
 )
 
+// isMinutePeriod reports whether a wire period value is an intraday period.
+func isMinutePeriod(period uint16) bool {
+	switch period {
+	case KlinePeriod1Minute, KlinePeriod5Minute, KlinePeriod15Minute,
+		KlinePeriod30Minute, KlinePeriod60Minute, KlinePeriodMultiMin:
+		return true
+	}
+	return false
+}
+
 // periodMap maps user-friendly period strings to protocol period values.
 var periodMap = map[string]struct {
 	period uint16
@@ -152,7 +162,9 @@ func (c *MainClient) GetKlineFrom(code string, period string, start, count int) 
 			return nil, err
 		}
 	}
-	if isLikelyFundKlineCode(normalizedCode, market) {
+	// The 7727 fund kline protocol only carries day-and-above periods; minute
+	// bars for exchange-traded funds are served by the main 7709 protocol.
+	if isLikelyFundKlineCode(normalizedCode, market) && !isMinutePeriod(pv.period) {
 		exClient, err := DialExBest(nil, WithTimeout(c.timeout))
 		if err != nil {
 			return nil, err

@@ -259,6 +259,21 @@ func DecodeTicks(body []byte) ([]Tick, error) {
 		tick.Active2 = binary.LittleEndian.Uint16(body[2:4])
 		body = body[4:]
 
+		// ETF quotes arrive at 10x the stock price granularity, same as
+		// transaction lists (see transactionPriceScale).
+		if scale := transactionPriceScale(tick.Code); scale != 1 {
+			s := float64(scale)
+			tick.PrevClose /= s
+			tick.Open /= s
+			tick.High /= s
+			tick.Low /= s
+			tick.Price /= s
+			for li := range tick.BuyLevels {
+				tick.BuyLevels[li].Price /= s
+				tick.SellLevels[li].Price /= s
+			}
+		}
+
 		ticks = append(ticks, tick)
 	}
 	return ticks, nil
