@@ -102,6 +102,22 @@ var fundHosts = []HostInfo{
 	{Name: "基金扩展主站13", IP: "124.71.223.19", Port: 7727},
 }
 
+// icfqsHosts 是 ICFQS TQLEX HTTP 服务地址列表 (题材/龙虎榜等云端数据)。
+var icfqsHosts = []HostInfo{
+	{Name: "华为均衡上海1", IP: "119.3.157.89", Port: 7615},
+	{Name: "华为均衡广州1", IP: "139.9.211.159", Port: 7615},
+	{Name: "华为均衡广州2", IP: "121.37.193.4", Port: 7615},
+	{Name: "华为均衡广州3", IP: "124.71.56.161", Port: 7615},
+	{Name: "华为均衡上海2", IP: "123.60.69.160", Port: 7615},
+	{Name: "华为均衡上海3", IP: "123.60.149.213", Port: 7615},
+	{Name: "腾讯上海均衡1", IP: "118.25.106.154", Port: 7615},
+	{Name: "腾讯广州均衡1", IP: "129.204.254.13", Port: 7615},
+	{Name: "腾讯广州均衡2", IP: "159.75.115.35", Port: 7615},
+	{Name: "腾讯北京均衡", IP: "82.157.190.225", Port: 7615},
+	{Name: "华为均衡5", IP: "121.36.192.253", Port: 7615},
+	{Name: "华为广州均衡5", IP: "124.71.105.217", Port: 7615},
+}
+
 // MainHosts returns the built-in main quote servers.
 func MainHosts() []HostInfo { return append([]HostInfo(nil), mainHosts...) }
 
@@ -114,6 +130,9 @@ func ExHosts() []HostInfo { return FundHosts() }
 // FundHosts returns the built-in fund quote servers.
 func FundHosts() []HostInfo { return append([]HostInfo(nil), fundHosts...) }
 
+// ICFQSHosts returns the built-in ICFQS TQLEX HTTP servers.
+func ICFQSHosts() []HostInfo { return append([]HostInfo(nil), icfqsHosts...) }
+
 // MainAddresses returns the built-in main quote host:port list.
 func MainAddresses() []string { return hostAddresses(mainHosts) }
 
@@ -125,6 +144,9 @@ func ExAddresses() []string { return FundAddresses() }
 
 // FundAddresses returns the built-in fund host:port list.
 func FundAddresses() []string { return hostAddresses(fundHosts) }
+
+// ICFQSAddresses returns the built-in ICFQS TQLEX host:port list.
+func ICFQSAddresses() []string { return hostAddresses(icfqsHosts) }
 
 func hostAddresses(hosts []HostInfo) []string {
 	addrs := make([]string, 0, len(hosts))

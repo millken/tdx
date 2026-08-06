@@ -52,7 +52,17 @@ func main() {
 		return
 	}
 
-	boardCmd := cmd == "limit" || cmd == "board-members"
+	// ICFQS 命令走 HTTP，无需 TCP 拨号。
+	if strings.HasPrefix(cmd, "icfqs-") {
+		runICFQSCommand(cmd, args[1:], w, *format)
+		return
+	}
+
+	boardCmd := cmd == "limit" || cmd == "board-members" ||
+		cmd == "mac-quotes" || cmd == "mac-symbol-info" ||
+		cmd == "mac-symbol-bars" || cmd == "mac-symbol-quotes" ||
+		cmd == "mac-transactions" || cmd == "mac-tick-charts" ||
+		cmd == "mac-market-monitor" || cmd == "mac-capital-flow"
 	if boardCmd {
 		client, err := dialBoardClient(*spHost)
 		if err != nil {
@@ -127,6 +137,22 @@ func runCommand(cmd string, client *tdx.Client, args []string, w *os.File, forma
 		runLimit(client, args, w, format)
 	case "board-members":
 		runBoardMembers(client, args, w, format)
+	case "mac-quotes":
+		runMACQuotes(client, args, w, format)
+	case "mac-symbol-info":
+		runMACSymbolInfo(client, args, w, format)
+	case "mac-symbol-bars":
+		runMACSymbolBars(client, args, w, format)
+	case "mac-symbol-quotes":
+		runMACSymbolQuotes(client, args, w, format)
+	case "mac-transactions":
+		runMACTransactions(client, args, w, format)
+	case "mac-tick-charts":
+		runMACTickCharts(client, args, w, format)
+	case "mac-market-monitor":
+		runMACMarketMonitor(client, args, w, format)
+	case "mac-capital-flow":
+		runMACCapitalFlow(client, args, w, format)
 	case "board-heatmap":
 		fatalf("board-heatmap should be dispatched before runCommand")
 	default:
@@ -2161,6 +2187,29 @@ func availableCommands() string {
   board-members     Board member quotes (bitmap fields)
   lhb               Dragon-Tiger list (龙虎榜)
   bq                Batch compact quote (涨速/短换手/量比)
+
+  MAC protocol (mac_quotation, via SP host):
+  mac-quotes        Single stock snapshot + intraday (0x122D)
+  mac-symbol-info   Stock summary / F10 (0x122A)
+  mac-symbol-bars   Unified K-line with adjust (0x122E)
+  mac-symbol-quotes Batch quotes by bitmap (0x122B)
+  mac-transactions  Intraday transactions (0x122F)
+  mac-tick-charts   Multi-day tick chart (0x123E)
+  mac-market-monitor Market unusual monitor (0x1237)
+  mac-capital-flow  Capital flow today/5d (0x1218)
+
+  ICFQS (HTTP cloud, themes/lhb/daily-review):
+  icfqs-hot-topics     Hot themes (热门题材)
+  icfqs-top-topics     Top-N leading themes (领涨题材)
+  icfqs-new-topics     New themes (新概念)
+  icfqs-events         Theme events (事件驱动)
+  icfqs-topic-list     Theme list by category (题材列表)
+  icfqs-search-topics  Search themes by keyword (搜索题材)
+  icfqs-topic-detail   Theme detail (题材详情)
+  icfqs-topic-stocks   Theme member stocks (成分股)
+  icfqs-quotes-batch   Batch quotes (批量行情)
+  icfqs-lhb-detail     Dragon-Tiger detail (龙虎榜)
+  icfqs-mrfp-latest-date Latest daily-review date (复盘最新日期)
 
 Examples:
   tdx-cli probe                    # probe main servers

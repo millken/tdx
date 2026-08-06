@@ -124,8 +124,18 @@ const (
 	DirectFrameTypeCompanyCtn   uint16 = 0x02D0
 	DirectFrameTypeTopBoard     uint16 = 0x053F
 	DirectFrameTypeQuotesList   uint16 = 0x054B
-	DirectFrameTypeBoardMembers uint16 = 0x122C
-	DirectFrameTypeBatchQuote   uint16 = 0x054C
+	DirectFrameTypeBoardMembers   uint16 = 0x122C
+	DirectFrameTypeBatchQuote     uint16 = 0x054C
+
+	// MAC (mac_quotation) 协议命令码，经 SP 登录后走 head=0x01 帧。
+	DirectFrameTypeMACSymbolInfo    uint16 = 0x122A // MAC: 股票摘要
+	DirectFrameTypeMACSymbolQuotes  uint16 = 0x122B // MAC: 批量股票报价
+	DirectFrameTypeMACQuotes        uint16 = 0x122D // MAC: 行情快照(含分时)
+	DirectFrameTypeMACSymbolBars    uint16 = 0x122E // MAC: 统一K线
+	DirectFrameTypeMACTransactions  uint16 = 0x122F // MAC: 分时成交
+	DirectFrameTypeMACMarketMonitor uint16 = 0x1237 // MAC: 市场监控
+	DirectFrameTypeMACCapitalFlow   uint16 = 0x1218 // MAC: 资金流向(head=0x02)
+	DirectFrameTypeMACTickCharts    uint16 = 0x123E // MAC: 多日分时
 )
 
 // Market constants.
