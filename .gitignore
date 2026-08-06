@@ -16,3 +16,4 @@ docs/
 *.tmp
 *.bak
 *.swp
+.vscode

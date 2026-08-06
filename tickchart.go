@@ -11,8 +11,8 @@ import (
 // TickChart represents one sampling point on the intraday chart.
 type TickChart struct {
 	Time   string  // HH:MM
-	Price  float64 // yuan (price / 100)
-	Avg    float64 // yuan (avg / 10000)
+	Price  float64 // yuan (price / (100*scale))
+	Avg    float64 // yuan (avg / (10000*scale))
 	Volume int64   // lots (手)
 }
 
@@ -69,7 +69,7 @@ func (c *MainClient) GetTickChart(code string, count int) ([]TickChart, error) {
 		_ = os.WriteFile("/tmp/tdx_tickchart_body.hex", []byte(hex.EncodeToString(response.Body.Decoded)), 0644)
 	}
 
-	return DecodeTickChart(response.Body.Decoded)
+	return DecodeTickChart(response.Body.Decoded, normalizedCode)
 }
 
 // DecodeTickChart decodes a 0x0537 tick chart response body.
@@ -80,13 +80,17 @@ func (c *MainClient) GetTickChart(code string, count int) ([]TickChart, error) {
 //   - avg (signed): first record is the base avg; subsequent records are deltas
 //   - volume (signed, unit: lots 手)
 //
-// Final units: price / 100 = yuan, avg / 10000 = yuan.
-func DecodeTickChart(body []byte) ([]TickChart, error) {
+// Final units: price / (100*scale) = yuan, avg / (10000*scale) = yuan, where
+// scale comes from transactionPriceScale(code) — stocks use scale=1, ETFs scale=10.
+func DecodeTickChart(body []byte, code string) ([]TickChart, error) {
 	if len(body) < 4 {
 		return nil, fmt.Errorf("tick chart body too short: %d", len(body))
 	}
 	count := int(binary.LittleEndian.Uint16(body[:2]))
 	body = body[4:]
+	scale := transactionPriceScale(code)
+	priceDiv := 100 * scale
+	avgDiv := 10000 * scale
 	points := make([]TickChart, 0, count)
 
 	var startPrice int64
@@ -112,8 +116,8 @@ func DecodeTickChart(body []byte) ([]TickChart, error) {
 
 		points = append(points, TickChart{
 			Time:   tickChartLabel(i),
-			Price:  float64(startPrice+price) / 100,
-			Avg:    float64(startAvg+avg) / 10000,
+			Price:  float64(startPrice+price) / float64(priceDiv),
+			Avg:    float64(startAvg+avg) / float64(avgDiv),
 			Volume: volume,
 		})
 

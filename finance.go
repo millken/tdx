@@ -9,7 +9,7 @@ import (
 
 // FinanceInfo represents fundamental financial data for a stock.
 //
-// Wire format (opentdx): "<HB6sfHHII" + 31 "f" = 9 (header) + 140 (data) bytes.
+// Wire format (opentdx): "<HB6sfHHII" + 30 "f" = 9 (header) + 136 (data) bytes.
 // All float fields are IEEE 754 little-endian float32, converted to float64.
 type FinanceInfo struct {
 	LiuTongGuBen float64 // 流通股本(股)
